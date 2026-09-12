@@ -1,0 +1,67 @@
+# Cold-path (runc/runsc) worker image for the box-js JScript emulation engine, and the
+# base for the warm gVisor rootfs.
+#
+# BUILT FROM THE FORK, NOT FROM NPM. box-js is vendored here as a git submodule pinned
+# to a known commit of github.com/wmetcalf/box-js. `npm install box-js` resolves to the
+# upstream CapacitorSet package, which lacks the fork's BOM-over---encoding handling,
+# per-stage timeout defaults and vm2 floor — a worker built that way would silently
+# analyse samples worse than the operator's own checkout does.
+#
+# TWO RUNTIMES IN ONE IMAGE, deliberately. blastbox's worker harness is Python; box-js
+# is Node. Rather than bridge them over a socket, the Python engine shells `node run.js`
+# as a subprocess under the worker's Limits. The cost is a larger image; the benefit is
+# that the engine stays a thin adapter with no protocol of its own to get wrong.
+#
+# `file` IS A RUNTIME DEPENDENCY, not a convenience: box-js execs file(1) on every
+# resource it writes to classify dropped payloads, and silently mislabels them if it is
+# absent. m4 and gcc are needed for box-js's @cc_on conditional-compilation handling.
+#
+# NO NETWORK AT RUN TIME BY DEFAULT. The engine passes --fake-download unless the
+# worker's Limits.net_egress is set, in which case it passes --download and the
+# dispatcher's egress rooter is what actually permits the fetch.
+#
+# Build context = this repo's root (the submodule must be checked out):
+#   git submodule update --init
+#   docker build -t boxjs-cold-worker:dev -f deploy/docker/Dockerfile.boxjs-cold-worker .
+FROM node:20-bookworm-slim
+
+RUN useradd -u 10001 -m worker \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+         python3 python3-pip python3-venv file m4 gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# box-js first: it changes far less often than the engine, so it stays cached.
+COPY box-js /opt/box-js
+RUN cd /opt/box-js \
+    && npm ci --omit=dev 2>/dev/null || npm install --omit=dev \
+    && npm cache clean --force
+
+# Prove at BUILD time that the emulator actually runs in this image, rather than
+# discovering a broken dependency tree on the first sample. A cold worker whose
+# node_modules are wrong should fail the build, not every job.
+RUN printf 'var s=new ActiveXObject("WScript.Shell");s.Run("cmd /c echo BUILD_SMOKE_OK");\n' > /tmp/smoke.js \
+    && mkdir -p /tmp/smokeout \
+    && node /opt/box-js/run.js /tmp/smoke.js --output-dir=/tmp/smokeout \
+         --no-kill --no-shell-error --loglevel=info 2>&1 | grep -q BUILD_SMOKE_OK \
+    && echo "box-js worker ready: $(node -p "require('/opt/box-js/package.json').version")" \
+    && rm -rf /tmp/smoke.js /tmp/smokeout
+
+COPY pyproject.toml README.md /src/boxjs-engine/
+COPY src /src/boxjs-engine/src
+RUN pip install --no-cache-dir --break-system-packages /src/boxjs-engine \
+    && rm -rf /src \
+    && python3 -c "import blastbox.worker.cold, boxjs_engine; print('engine importable')"
+
+# Operator-fixed engine, never job-derived.
+ENV BLASTBOX_ENGINE=boxjs_engine.engine:BoxJsEngine \
+    BLASTBOX_DETONATE_NAME=boxjs \
+    BOXJS_RUN_JS=/opt/box-js/run.js \
+    NODE_OPTIONS=--max-old-space-size=2048
+
+USER 10001:10001
+ENTRYPOINT ["python3", "-m", "blastbox.worker.cold"]
+
+LABEL org.opencontainers.image.title="boxjs-cold-worker" \
+      org.opencontainers.image.description="box-js JScript/JS emulation worker (IOCs + dropped files sealed; built from the wmetcalf fork)" \
+      org.opencontainers.image.version="0.1.0"

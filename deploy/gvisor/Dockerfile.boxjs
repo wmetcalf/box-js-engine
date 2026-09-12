@@ -1,0 +1,50 @@
+# gVisor C/R warm-tier rootfs for box-js, built on top of boxjs-cold-worker:dev. The
+# container is CHECKPOINTED with node and the box-js module graph already resident, and
+# RESTORED per job.
+#
+# WHETHER WARM IS WORTH IT HERE IS UNMEASURED. Do not assume it is. The honest shape of
+# the question: box-js's per-sample cost is dominated by emulation and by the rewrite
+# stage (acorn + escodegen + uglify), which run per sample and cannot be pre-warmed. What
+# warm avoids is node's own startup plus require()-ing box-js's module graph — a fixed
+# cost in the low hundreds of milliseconds. Against a corpus whose median sample takes
+# seconds, that is closer to Magika's mild 6x-startup case than to ClamAV's 1GB-database
+# case, and a cold box-js worker is perfectly usable.
+#
+# MEASURE BEFORE CHOOSING THE TIER: time `node run.js` on a trivial sample (startup-bound)
+# against a real one (emulation-bound). If the gap is small relative to job time, run
+# cold and spend the complexity budget elsewhere. This file exists so the choice is
+# available and measurable, not because warm is known to be right.
+#
+# NO READINESS ENTRYPOINT. box-js has no daemon and no separate readiness state: node
+# starts, requires box-js, and is immediately able to run. The cold image already proved
+# at build time that the emulator executes. A restore that somehow lacked a working
+# node_modules would fail the job loudly with no_results_dir rather than silently
+# reporting every sample clean — which is exactly why the ClamAV rootfs needs a readiness
+# gate and this one does not.
+#
+# Build context = this repo's root:
+#   docker build --build-arg BASE=boxjs-cold-worker:dev \
+#     -f deploy/gvisor/Dockerfile.boxjs -t boxjs-warm:gvisor .
+ARG BASE=boxjs-cold-worker:dev
+FROM ${BASE}
+ARG ENGINE=boxjs_engine.engine:BoxJsEngine
+USER root
+
+# run_warm.py and engines.py come from the blastbox checkout; BLASTBOX_SRC points at it.
+# They are not vendored here — pinning framework files in an engine repo is how a warm
+# worker ends up speaking a protocol version the dispatcher no longer does.
+ARG BLASTBOX_SRC=blastbox
+COPY ${BLASTBOX_SRC}/deploy/gvisor/run_warm.py /opt/blastbox/run_warm.py
+COPY ${BLASTBOX_SRC}/deploy/firecracker/engines.py /opt/blastbox/engines.py
+RUN printf '%s' "${ENGINE}" > /opt/blastbox/engine \
+    && mkdir -p /in /out /ctrl \
+    && chown 10001:10001 /out /ctrl \
+    && find / -xdev -type f -perm /6000 -exec chmod a-s {} + 2>/dev/null || true
+
+USER 10001:10001
+
+# BLASTBOX_GVISOR_WARM_ARGV='["python3","/opt/blastbox/run_warm.py"]'
+
+LABEL org.opencontainers.image.title="boxjs-warm-gvisor" \
+      org.opencontainers.image.description="box-js warm gVisor C/R rootfs (runsc checkpoint/restore; node + module graph resident)" \
+      org.opencontainers.image.version="0.1.0"

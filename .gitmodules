@@ -1,0 +1,3 @@
+[submodule "box-js"]
+	path = box-js
+	url = https://github.com/wmetcalf/box-js.git
