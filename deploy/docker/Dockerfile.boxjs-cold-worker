@@ -20,15 +20,28 @@
 # worker's Limits.net_egress is set, in which case it passes --download and the
 # dispatcher's egress rooter is what actually permits the fetch.
 #
+# PYTHON IS THE BASE, NODE IS COPIED IN — not the other way round. blastbox on PyPI
+# requires Python >=3.12 and the node:*-bookworm images ship 3.11, so a Node base fails
+# at `pip install blastbox`. Starting from python:3.12-slim also matches every other
+# blastbox worker image (magika, clamav), which keeps the Python layer canonical.
+# Node comes from the official image by COPY rather than a nodesource curl|bash, so the
+# build needs no extra network and the version is pinned by the tag.
+#
 # Build context = this repo's root (the submodule must be checked out):
 #   git submodule update --init
 #   docker build -t boxjs-cold-worker:dev -f deploy/docker/Dockerfile.boxjs-cold-worker .
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim AS nodesrc
+
+FROM python:3.12-slim-bookworm
+
+COPY --from=nodesrc /usr/local/bin/node /usr/local/bin/node
+COPY --from=nodesrc /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && node --version && npm --version
 
 RUN useradd -u 10001 -m worker \
     && apt-get update \
-    && apt-get install -y --no-install-recommends \
-         python3 python3-pip python3-venv file m4 gcc libc6-dev \
+    && apt-get install -y --no-install-recommends file m4 gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # box-js first: it changes far less often than the engine, so it stays cached.
@@ -49,7 +62,7 @@ RUN printf 'var s=new ActiveXObject("WScript.Shell");s.Run("cmd /c echo BUILD_SM
 
 COPY pyproject.toml README.md /src/boxjs-engine/
 COPY src /src/boxjs-engine/src
-RUN pip install --no-cache-dir --break-system-packages /src/boxjs-engine \
+RUN pip install --no-cache-dir /src/boxjs-engine \
     && rm -rf /src \
     && python3 -c "import blastbox.worker.cold, boxjs_engine; print('engine importable')"
 
