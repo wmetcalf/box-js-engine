@@ -2,18 +2,33 @@
 # container is CHECKPOINTED with node and the box-js module graph already resident, and
 # RESTORED per job.
 #
-# WHETHER WARM IS WORTH IT HERE IS UNMEASURED. Do not assume it is. The honest shape of
-# the question: box-js's per-sample cost is dominated by emulation and by the rewrite
-# stage (acorn + escodegen + uglify), which run per sample and cannot be pre-warmed. What
-# warm avoids is node's own startup plus require()-ing box-js's module graph — a fixed
-# cost in the low hundreds of milliseconds. Against a corpus whose median sample takes
-# seconds, that is closer to Magika's mild 6x-startup case than to ClamAV's 1GB-database
-# case, and a cold box-js worker is perfectly usable.
+# WARM IS WORTH IT HERE — BUT NOT FOR THE REASON THIS FILE ORIGINALLY GAVE.
 #
-# MEASURE BEFORE CHOOSING THE TIER: time `node run.js` on a trivial sample (startup-bound)
-# against a real one (emulation-bound). If the gap is small relative to job time, run
-# cold and spend the complexity budget elsewhere. This file exists so the choice is
-# available and measurable, not because warm is known to be right.
+# The first version of this comment reasoned that warm only avoids node's startup plus
+# require()-ing box-js's module graph, guessed that at "a fixed cost in the low hundreds
+# of milliseconds", and concluded a cold worker was probably fine. It then said to
+# MEASURE before choosing. Measured on toolz2, 3 runs each, boxjs-cold-worker:dev:
+#
+#   bare node startup                                47 ms
+#   node + require box-js                            91 ms   <- what the guess was about
+#   full run in a RESIDENT container, trivial sample 2062 ms
+#   full run in a RESIDENT container, real sample    1622 ms
+#   bare `docker run --rm ... true` (runc)           4216 ms  <- the actual dominant cost
+#   the same under runsc                             4496 ms
+#
+# So the guess was right about its own number and wrong about which number mattered.
+# Node startup plus the module graph is 91 ms — about 5% of a job. CONTAINER CREATION is
+# ~4.2 s, more than twice the emulation itself, and that is precisely what a warm pool
+# removes by keeping the sandbox resident. Warm turns a ~6 s cold job into a ~2 s one.
+#
+# Two further things the measurement says, both worth keeping:
+#
+#   * Emulation is NOT the bottleneck, and sample complexity barely moves it — a trivial
+#     two-line sample took LONGER (2062 ms) than a 13 KB obfuscated one (1622 ms). Per-run
+#     cost is dominated by box-js's fixed pipeline (rewrite, timeouts), not by the script.
+#     Do not tune this tier by making samples simpler.
+#   * runsc costs ~280 ms more per container than runc at startup. Irrelevant warm, since
+#     it is paid once per resident sandbox rather than once per sample.
 #
 # NO READINESS ENTRYPOINT. box-js has no daemon and no separate readiness state: node
 # starts, requires box-js, and is immediately able to run. The cold image already proved
