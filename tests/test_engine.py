@@ -462,3 +462,18 @@ def test_the_jse_check_covers_the_whole_input(tmp_path):
     p = tmp_path / "s.js"
     p.write_bytes(b"var a = 1;\n" + b"/" * (2 << 20) + b"\n//**Start Encode**#@~^IgAAAA==body IAAAAA==^#~@")
     assert _is_jscript_encoded(p) is True
+
+
+def test_a_descendant_outside_the_session_cannot_hold_the_run(tmp_path, monkeypatch):
+    """A process that leaves box-js's session (setsid) and keeps stderr open must not keep
+    detonate from returning."""
+    import time
+
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
+            " {type: 'Run', value: {command: 'x'}}]));\n"
+            "require('child_process').spawn('sleep', ['30'], {detached: true,"
+            " stdio: ['ignore', 'ignore', 'inherit']}).unref();\nprocess.exit(0);\n")
+    t0 = time.monotonic()
+    res, _ = _detonate(tmp_path, monkeypatch, body, timeout_s=2)
+    assert time.monotonic() - t0 < 15
+    assert res.status == "ok"

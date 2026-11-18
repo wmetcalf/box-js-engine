@@ -392,7 +392,7 @@ class BoxJsEngine:
         started = time.monotonic()
         proc = subprocess.Popen(  # fixed argv, no shell
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            start_new_session=True)
+            start_new_session=True, bufsize=0)  # raw pipe: no buffer lock for close() to wait on
         reader = threading.Thread(target=keep_tail, args=(proc.stderr,), daemon=True)
         reader.start()
         try:
@@ -412,8 +412,11 @@ class BoxJsEngine:
             except (ProcessLookupError, PermissionError):
                 pass
             proc.wait()
+            # A process that left the session (setsid) may still hold the pipe: give up on the
+            # tail after a bound rather than wait for it, and leave the daemon reader behind.
             reader.join(timeout=5)
-            proc.stderr.close()
+            if not reader.is_alive():
+                proc.stderr.close()
         stderr = bytes(tail)
         # box-js's own --timeout makes _run.js print a line and exit 0. stdout is the sample's
         # to write too (console.log), so it is judged by the clock instead: a run that lasted
