@@ -536,3 +536,22 @@ def test_snippet_discovery_reads_each_inode_once(tmp_path, monkeypatch):
 def test_a_signal_killed_silent_run_is_an_engine_error(tmp_path, monkeypatch):
     res, _ = _detonate(tmp_path, monkeypatch, "process.kill(process.pid, 'SIGSEGV');")
     assert res.status == "engine_error" and res.payload.fields["error"] == "box_js_failed"
+
+
+def test_snippet_matching_skips_resources_and_is_bounded(tmp_path, monkeypatch):
+    from pathlib import Path as _P
+
+    from boxjs_engine import engine
+
+    cmd = "c" * 100
+    r = _results(tmp_path, [{"type": "Run", "value": {"command": cmd}}])
+    names = [f"ab2dee1c-06b2-4f7e-901b-{i:012d}" for i in range(20)]
+    for n in names:
+        (r / n).write_text("d" * 100)          # distinct inodes, same size as the command
+    (r / "resources.json").write_text(json.dumps({names[0]: {"path": "C:\\x"}}))
+    reads = []
+    orig = _P.read_bytes
+    monkeypatch.setattr(_P, "read_bytes", lambda self: (reads.append(self.name), orig(self))[1])
+    engine._snippet_names(r, max_read_bytes=500)
+    assert names[0] not in reads
+    assert len(reads) <= 5

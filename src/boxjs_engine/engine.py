@@ -210,7 +210,7 @@ def _is_jscript_encoded(path: Path) -> bool:
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
-def _snippet_names(results: Path) -> set[str]:
+def _snippet_names(results: Path, max_read_bytes: int = 64 << 20) -> set[str]:
     """Names of the code snippets box-js wrote: box-js output, not files the sample wrote.
 
     box-js keys snippets.json by snippet file name. It writes each snippet's file before
@@ -234,8 +234,9 @@ def _snippet_names(results: Path) -> set[str]:
     # Each file's bytes are read at most once per inode (hard links share one), so planted
     # links cannot multiply the reading.
     seen: dict[tuple[int, int], bool] = {}
+    budget = max_read_bytes      # bytes the content match may read, at most
     for p in results.iterdir():
-        if not _is_regular(p):
+        if not _is_regular(p) or p.name in resources:
             continue
         logged_js = p.suffix == ".js" and _UUID.fullmatch(p.stem)
         run_command = False
@@ -243,10 +244,11 @@ def _snippet_names(results: Path) -> set[str]:
             st = p.lstat()
             if st.st_size <= longest:
                 key = (st.st_dev, st.st_ino)
-                if key not in seen:
+                if key not in seen and st.st_size <= budget:
+                    budget -= st.st_size
                     seen[key] = p.read_bytes().decode("utf-8", "replace") in commands
-                run_command = seen[key]
-        if (logged_js or run_command) and p.name not in resources:
+                run_command = seen.get(key, False)
+        if logged_js or run_command:
             names.add(p.name)
     return names
 
@@ -280,7 +282,7 @@ def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
     artifacts: list[DeclaredArtifact] = []
     ids: dict[str, int] = {}
     total = 0
-    snippets = _snippet_names(results)
+    snippets = _snippet_names(results, limits.max_total_artifact_bytes)
 
     def add(path: Path, kind: str) -> bool:
         nonlocal total
