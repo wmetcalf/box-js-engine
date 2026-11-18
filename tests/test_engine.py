@@ -220,17 +220,31 @@ def test_an_encoded_input_with_no_results_dir_is_an_engine_error(tmp_path, monke
     from boxjs_engine.engine import RUN_JS_ENV, BoxJsEngine
 
     run_js = tmp_path / "run.js"
-    run_js.write_text("process.exit(1)")       # box-js broken before making its results dir
+    run_js.write_text("process.exit(4)")       # box-js broken before making its results dir
     monkeypatch.setenv(RUN_JS_ENV, str(run_js))
     (tmp_path / "s.jse").write_bytes(b"#@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@")
     res = BoxJsEngine().detonate(tmp_path / "s.jse", tmp_path, Limits())
     assert res.status == "engine_error" and res.payload.fields["error"] == "no_results_dir"
 
 
-def test_script_output_cannot_fake_box_js_timeout(tmp_path, monkeypatch):
-    body = "console.log('[info] Script output: Analysis for s.js timed out.'); process.exit(0);\n"
-    res, _ = _detonate(tmp_path, monkeypatch, body)
-    assert "timeout" not in [w.code for w in res.warnings]
+def test_detonate_takes_box_js_retry_dir_over_a_stale_one(tmp_path, monkeypatch):
+    from blastbox.limits import Limits
+
+    from boxjs_engine.engine import RUN_JS_ENV, BoxJsEngine
+
+    run_js = tmp_path / "run.js"
+    run_js.write_text(
+        "const fs = require('fs'), path = require('path');\n"
+        "const out = process.argv.find((a) => a.startsWith('--output-dir=')).slice(13);\n"
+        "const res = path.join(out, 's.js.1.results'); fs.mkdirSync(res);\n"
+        "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
+        " {type: 'Run', value: {command: 'x'}}]));\n")
+    monkeypatch.setenv(RUN_JS_ENV, str(run_js))
+    out = tmp_path / "out"
+    (out / "s.js.results").mkdir(parents=True)         # stale, from before this run
+    (tmp_path / "s.js").write_text("1")
+    res = BoxJsEngine().detonate(tmp_path / "s.js", out, Limits())
+    assert res.payload.fields["results_dir"] == "s.js.1.results"
 
 
 def test_a_zero_index_decoy_is_not_box_js_dir(tmp_path):
@@ -349,10 +363,17 @@ def test_an_encoded_block_behind_a_plain_prologue_is_flagged(tmp_path, monkeypat
 
 
 def test_box_js_own_timeout_is_reported(tmp_path, monkeypatch):
-    body = "console.log('Analysis for s.js timed out.'); process.exit(0);\n"
-    res, _ = _detonate(tmp_path, monkeypatch, body)
+    """box-js's own --timeout (60% of timeout_s, here 1 s) ends the run with exit 0."""
+    body = "setTimeout(() => process.exit(0), 1300);\n"
+    res, _ = _detonate(tmp_path, monkeypatch, body, timeout_s=2)
     assert res.payload.fields["killed"] is False
     assert "timeout" in [w.code for w in res.warnings]
+
+
+def test_stdout_cannot_fake_or_hide_box_js_timeout(tmp_path, monkeypatch):
+    body = "console.log('done\\nAnalysis for s.js timed out.'); process.exit(0);\n"
+    res, _ = _detonate(tmp_path, monkeypatch, body, timeout_s=10)
+    assert "timeout" not in [w.code for w in res.warnings]
 
 
 def test_a_planted_higher_index_results_dir_is_not_taken(tmp_path, monkeypatch):
@@ -370,6 +391,8 @@ def test_the_jse_check_finds_a_block_after_a_bad_terminator(tmp_path):
 
     p = tmp_path / "s.js"
     p.write_bytes(b"#@~^AAAAAA== x ==^#~@ then #@~^IgAAAA==body IAAAAA==^#~@")
+    assert _is_jscript_encoded(p) is True
+    p.write_bytes(b"#@~^AAAAAA== x ==^#~@ y IAAAAA==^#~@")      # one opener, bad then good tail
     assert _is_jscript_encoded(p) is True
     p.write_bytes(b"var s = '#@~^AAAAAA==';")
     assert _is_jscript_encoded(p) is False

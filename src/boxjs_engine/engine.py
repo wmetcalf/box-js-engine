@@ -28,6 +28,7 @@ import signal
 import stat
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from blastbox.contract import DeclaredArtifact, Detection, Record, Warning
@@ -362,14 +363,16 @@ class BoxJsEngine:
         with tempfile.TemporaryFile(dir=outdir) as out_f, \
                 tempfile.TemporaryFile(dir=outdir) as err_f:
             # NEVER shell=True; argv is a fixed list. The worker is the sandbox.
+            started = time.monotonic()
             proc = subprocess.Popen(  # fixed argv, no shell
                 argv, stdout=out_f, stderr=err_f, start_new_session=True)
             try:
                 # Wall-clock guard above box-js's own budget, so a wedged node process
                 # cannot outlive the job.
                 code = proc.wait(timeout=limits.timeout_s + 10)
+                elapsed = time.monotonic() - started
             except subprocess.TimeoutExpired:
-                killed, code = True, -9
+                killed, code, elapsed = True, -9, float(limits.timeout_s + 10)
                 warnings.append(Warning(
                     code="timeout",
                     message=f"box-js exceeded {limits.timeout_s + 10}s wall clock",
@@ -383,13 +386,10 @@ class BoxJsEngine:
             err_f.seek(0, os.SEEK_END)
             err_f.seek(max(0, err_f.tell() - 2000))
             stderr = err_f.read()
-            # _run.js prints this and exits 0 when box-js's own --timeout ends the analysis.
-            out_f.seek(0, os.SEEK_END)
-            out_f.seek(max(0, out_f.tell() - 4096))
-            # Exactly _run.js's line; script output reaches stdout too, but prefixed.
-            own_timeout = (f"Analysis for {input.name} timed out.".encode()
-                           in out_f.read().splitlines())
-        if own_timeout and not killed:
+        # box-js's own --timeout makes _run.js print a line and exit 0. stdout is the sample's
+        # to write too (console.log), so it is judged by the clock instead: a run that lasted
+        # its whole emulation budget was cut short (or ended at the wire; flagged either way).
+        if not killed and elapsed >= vm_timeout:
             warnings.append(Warning(
                 code="timeout",
                 message=f"box-js's own {vm_timeout}s timeout ended the analysis; results are partial",
