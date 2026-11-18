@@ -132,3 +132,38 @@ def test_vbs_is_not_claimed_box_js_has_no_vbscript_interpreter():
     from boxjs_engine.engine import BoxJsEngine
 
     assert "vbs" not in BoxJsEngine.formats
+
+
+def test_a_jscript_encoded_script_is_rejected_not_reported_ok(tmp_path, monkeypatch):
+    """box-js does not decode JScript.Encode (it exits 4 asking for an external decoder), so
+    an encoded script must not come back as a clean, empty `ok` analysis."""
+    from blastbox.limits import Limits
+
+    from boxjs_engine.engine import BoxJsEngine
+
+    run_js = tmp_path / "box-js" / "run.js"
+    run_js.parent.mkdir()
+    run_js.write_text("process.exit(4)")
+    monkeypatch.setenv("BOXJS_RUN_JS", str(run_js))
+    sample = tmp_path / "s.jse"
+    sample.write_bytes(b"\xef\xbb\xbf  #@~^IgAAAA==@#@&/mDkwOR?4.+^V^#~@")
+    res = BoxJsEngine().detonate(sample, tmp_path, Limits())
+    assert res.status == "rejected"
+    assert [w.code for w in res.warnings] == ["jscript_encoded"]
+    assert res.payload.fields["error"] == "jscript_encoded"
+
+
+def test_a_resource_matching_a_run_command_stays_dropped(tmp_path):
+    """resources.json names the sample's own writes; one whose bytes equal a Run command is
+    still a dropped file, not box-js's saved command."""
+    cmd_text = "cmd /c echo contract"
+    r = _results(tmp_path, [{"type": "Run", "value": {"command": cmd_text}}])
+    cmd = "ab2dee1c-06b2-4f7e-901b-8273d423d049"      # runShellCommand: the command
+    res = "8c1dd676-f228-4159-bb73-87cc827a2571"      # logResource: the sample's file
+    (r / cmd).write_text(cmd_text)
+    (r / res).write_text(cmd_text)
+    (r / "snippets.json").write_text(json.dumps({cmd: {"as": "WScript code"}}))
+    (r / "resources.json").write_text(json.dumps({res: {"path": "C:\\x.txt"}}))
+    kinds = {a.id: a.kind for a in _declare_artifacts(r, tmp_path, _Limits(), [])}
+    assert kinds[cmd] == "snippet"
+    assert kinds[res] == "dropped"

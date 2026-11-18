@@ -10,7 +10,10 @@ formats = ["js", "jse", "wsf", "wsh", "hta"]
 # Built to run offline (--fake-download). See gap egress-mode for Limits.net_egress.
 network = ["none"]
 # No input cap in the engine; the worker's Limits apply.
-statuses = ["ok", "engine_error"]
+# rejected: a JScript.Encode-encoded script (any format, usually .jse). box-js has no decoder
+# and would exit 4 after creating its results dir, which reads as a clean, empty analysis;
+# the engine refuses it up front with error/warning jscript_encoded. Plain-text .jse runs.
+statuses = ["ok", "rejected", "engine_error"]
 
 # Everything lives under `<sample name>.results/`, box-js's own output directory. The analysis
 # files are declared first (one refused for budget is warned `artifacts_truncated`); then every

@@ -142,6 +142,16 @@ def _summarise(results: Path) -> dict:
     }
 
 
+# JScript.Encode's marker: the encoded body starts "#@~^" (optionally after a BOM/whitespace).
+_JSE_MARKER = b"#@~^"
+
+
+def _is_jscript_encoded(path: Path) -> bool:
+    with path.open("rb") as f:
+        head = f.read(4096)
+    return head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(_JSE_MARKER)
+
+
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
@@ -156,6 +166,9 @@ def _snippet_names(results: Path) -> set[str]:
     """
     index = _load_json(results / "snippets.json", {})
     names = {str(k) for k in index} if isinstance(index, dict) else set()
+    # The sample's own writes, which the content match below must never claim.
+    written = _load_json(results / "resources.json", {})
+    resources = {str(k) for k in written} if isinstance(written, dict) else set()
     iocs = _load_json(results / "IOC.json", [])
     commands = {
         e["value"]["command"] for e in (iocs if isinstance(iocs, list) else [])
@@ -169,7 +182,7 @@ def _snippet_names(results: Path) -> set[str]:
         logged_js = p.suffix == ".js" and _UUID.fullmatch(p.stem)
         run_command = (_UUID.fullmatch(p.name) and p.stat().st_size <= longest
                        and p.read_bytes().decode("utf-8", "replace") in commands)
-        if logged_js or run_command:
+        if (logged_js or run_command) and p.name not in resources:
             names.add(p.name)
     return names
 
@@ -263,6 +276,19 @@ class BoxJsEngine:
                 detected=self.detect(input),
                 warnings=[Warning(code="node_missing", message="node not on PATH")],
                 status="engine_error",
+            )
+
+        if _is_jscript_encoded(input):
+            # box-js has no JScript.Encode decoder: it exits 4 asking for an external one,
+            # after creating its results dir, which would read as a clean, empty analysis.
+            return DetonationResult(
+                payload=Record(fields={"schema_version": SCHEMA_VERSION,
+                                       "error": "jscript_encoded"}),
+                artifacts=[],
+                detected=self.detect(input),
+                warnings=[Warning(code="jscript_encoded",
+                                  message="JScript.Encode script: box-js cannot decode it")],
+                status="rejected",
             )
 
         warnings: list[Warning] = []

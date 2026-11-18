@@ -116,3 +116,17 @@ def test_snippet_and_dropped_counts_follow_the_worker_limits():
     its 1000 default, so the contract must not cap them (max_count 0 = uncapped)."""
     caps = {a.kind: a.max_count for a in CONTRACT.artifacts if a.kind in ("snippet", "dropped")}
     assert caps == {"snippet": 0, "dropped": 0}
+
+
+def test_a_jscript_encoded_script_is_a_rejection_that_conforms(tmp_path, monkeypatch):
+    run_js = tmp_path / "box-js" / "run.js"
+    run_js.parent.mkdir()
+    run_js.write_text("process.exit(4)")
+    monkeypatch.setenv(RUN_JS_ENV, str(run_js))
+    sample = tmp_path / "s.jse"
+    sample.write_bytes(b"#@~^IgAAAA==@#@&/mDkwOR?4.+^V^#~@")
+    out = tmp_path / "out"
+    out.mkdir()
+    res = BoxJsEngine().detonate(sample, out, Limits())
+    assert res.status == "rejected"
+    ec.assert_conforms(CONTRACT, res, out)
