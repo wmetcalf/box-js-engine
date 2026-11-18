@@ -1,0 +1,142 @@
+# Engine output contract for `boxjs` (schema blastbox-engine-contract/1).
+# Describes what src/boxjs_engine/engine.py emits TODAY.
+# Validate: python -m blastbox.contract.engine_contract validate blastbox-engine.toml
+schema = "blastbox-engine-contract/1"
+
+[engine]
+name = "boxjs"
+formats = ["js", "jse", "wsf", "wsh", "hta", "vbs"]
+# Built to run offline (--fake-download). See gap egress-mode for Limits.net_egress.
+network = ["none"]
+# No input cap in the engine; the worker's Limits apply.
+statuses = ["ok", "engine_error"]
+
+# Everything lives under `<sample name>.results/`, box-js's own output directory. The analysis
+# files are declared first; then every other top-level file there, smallest first, as `dropped`.
+# Count and bytes are bounded by the worker's Limits (max_artifacts, default 1000;
+# max_artifact_bytes, default 50 MiB, over which a file is warned `artifact_too_large` and not
+# declared; max_total_artifact_bytes), not by constants in the engine.
+
+[[artifacts]]
+id = "IOC.json"
+path = "*.results/IOC.json"
+kind = "analysis"
+role = "ioc_report"
+description = "box-js IOC list: [{type, value, description}], type is box-js's own IOC name (Run, FileWrite, UrlFetch, ...). Written on the first logged IOC (box-js always logs Sample Name), so absent only when box-js logged nothing or the file was over budget."
+
+[[artifacts]]
+id = "urls.json"
+path = "*.results/urls.json"
+kind = "analysis"
+role = "url_list"
+description = "Unique URLs the sample touched, a JSON list of strings. Absent when it touched none."
+
+[[artifacts]]
+id = "snippets.json"
+path = "*.results/snippets.json"
+kind = "analysis"
+role = "snippet_index"
+description = "Index of code snippets (eval'd JS, WScript/WMI commands) keyed by the snippet file name; the snippet bodies are declared as `dropped`."
+
+[[artifacts]]
+id = "resources.json"
+path = "*.results/resources.json"
+kind = "analysis"
+role = "resource_index"
+description = "Index of resources the sample wrote (emulated path, type, hashes) keyed by the uuid file name declared as `dropped`."
+
+[[artifacts]]
+id = "active_urls.json"
+path = "*.results/active_urls.json"
+kind = "analysis"
+role = "active_url_list"
+description = "URLs box-js judged live (only written when downloads are attempted)."
+
+[[artifacts]]
+id = "analysis.log"
+path = "*.results/analysis.log"
+kind = "analysis"
+role = "log"
+description = "box-js's analysis log."
+
+[[artifacts]]
+id = "*"
+path = "*.results/*"
+kind = "dropped"
+max_count = 1000
+role = "dropped_or_snippet"
+description = "Every other top-level file in the results dir: files the sample wrote (uuid names), code snippets (<uuid>.js), env_vars.json. max_count is Limits.max_artifacts' default."
+
+[payload]
+# ok: Record{exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs, write_iocs,
+#     url_iocs, url_count}. engine_error: Record{error, ...} (box_js_missing, node_missing,
+#     no_results_dir with exit_code + stderr_tail).
+root = "record"
+node_types = ["record"]
+required_root_fields = ["exit_code", "killed", "net_egress", "results_dir", "ioc_count",
+                        "exec_iocs", "write_iocs", "url_iocs", "url_count"]
+
+# No [[detections]]: the payload carries counts only, and Loadout turns nothing from this
+# engine into a detection (engines.py maps boxjs to dets=[]). See gap no-finding-codes.
+
+[[gaps]]
+id = "no-schema-version"
+description = "The ok payload Record has no schema/version field; a consumer cannot tell payload shapes apart across engine versions."
+
+[[gaps]]
+id = "no-finding-codes"
+description = "Findings exist only inside the IOC.json artifact as box-js IOC type names plus free-text descriptions; the payload has counts (exec/write/url IOC families) but no stable finding codes or severities."
+
+[[gaps]]
+id = "dropped-kind-ambiguous"
+description = "kind=dropped covers files the sample wrote, box-js's own code snippets (<uuid>.js) and env_vars.json alike; only snippets.json / resources.json, by file name, tell them apart."
+
+[[gaps]]
+id = "killed-is-ok"
+description = "A run killed at the wall clock (Limits.timeout_s + 10) whose results dir exists is status ok with killed=true and warning timeout; a nonzero box-js exit_code is ok too. The results are partial."
+
+[[gaps]]
+id = "egress-mode"
+description = "With Limits.net_egress set the engine passes --download and box-js fetches next stages for real; the payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
+
+[[gaps]]
+id = "silent-analysis-omission"
+description = "An analysis file that would exceed max_total_artifact_bytes (or max_artifacts) stops declaration without a warning; artifacts_truncated is emitted only when a dropped file is then also refused."
+
+[[gaps]]
+id = "loadout-caps-refuse-whole-result"
+description = "Loadout's boxjs.map_outputs refuses the WHOLE result over 128 artifacts, any artifact over 8 MiB, or 32 MiB in total, while the engine bounds only by Limits (defaults 1000 / 50 MiB / 500 MiB) and Loadout sets no Limits: a sample that drops many or large files fails the job instead of being truncated."
+
+[[gaps]]
+id = "loadout-requires-ioc-json"
+description = "Loadout refuses an ok result with no artifacts or no IOC.json; the engine returns ok without IOC.json when box-js logged nothing or IOC.json was over budget (warning artifact_too_large)."
+
+[[gaps]]
+id = "loadout-exec-ioc-subset"
+description = "Loadout normalizes commands only from IOC types run/commandexec/wmi.getobject.run/wmi.getobject.create; the engine's exec_iocs also counts createshortcut, task, task path and task arguments, which Loadout keeps only inside the IOC.json report. FileWrite/NewResource IOCs are not mapped (the dropped files are)."
+
+[[gaps]]
+id = "loadout-ignores-payload"
+description = "Loadout reads no payload field (exit_code, killed, net_egress, counts); a killed run shows only through the generic rule that any warning (including no_observable_behaviour) marks coverage incomplete."
+
+[[gaps]]
+id = "loadout-ignores-active-urls"
+description = "Loadout parses URLs only from urls.json (http/https with a host); active_urls.json and UrlFetch/XMLHTTP IOC values are retained as report files but not normalized."
+
+[[gaps]]
+id = "loadout-snippets-as-recovered-files"
+description = "Loadout maps every kind=dropped artifact to analysis_role recovered_file, so box-js's code snippets and env_vars.json are presented as files the sample dropped."
+
+[[gaps]]
+id = "loadout-skips-vbs"
+description = "The engine declares vbs, but Loadout's BOXJS_EXTENSIONS (cape_pipeline.py) route only js/jse/wsf/wsh/hta to it."
+
+[[gaps]]
+id = "loadout-emits-text-message-unproduced"
+description = "Loadout's boxjs EngineManifest emits lists text_message, but map_outputs creates only file, script and url artifacts."
+
+[[consumers]]
+name = "loadout"
+engine = "boxjs"
+mapper = "backend/loadout/boxjs.py:map_outputs"
+emits = ["file", "script", "url", "text_message"]

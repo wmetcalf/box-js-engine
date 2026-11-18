@@ -48,3 +48,20 @@ tier; see the header of `deploy/gvisor/Dockerfile.boxjs`.
 
 Scaffold. The engine compiles and is unit-tested; **neither image has been built and no
 end-to-end detonation has been run.**
+
+## Engine contract
+
+[`blastbox-engine.toml`](blastbox-engine.toml) states what the `boxjs` engine emits today: the
+artifact families under `<sample>.results/` (the `analysis` JSON/log files and everything else
+as `dropped`), the `record` payload's required fields, no detection codes, the gaps a consumer
+must know about, and Loadout's mapper (`backend/loadout/boxjs.py:map_outputs`).
+`tests/test_contract.py` checks real detonations (direct and through the harness's sealed
+`metadata.json`) against it.
+
+    python -m blastbox.contract.engine_contract validate blastbox-engine.toml
+    python -m blastbox.contract.engine_contract check blastbox-engine.toml metadata.json
+
+The checker is not in a released blastbox yet, so `tests/test_contract.py` skips there; run it
+with `PYTHONPATH=<blastbox-checkout>/src`. The real-detonation tests also need node and an
+installed submodule (`git submodule update --init && (cd box-js && npm ci --omit=dev)`) or
+`BOXJS_RUN_JS`.
