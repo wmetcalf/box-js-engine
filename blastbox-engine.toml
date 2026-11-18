@@ -103,7 +103,7 @@ description = "Findings exist only inside the IOC.json artifact as box-js IOC ty
 
 [[gaps]]
 id = "fork-index-files-null"
-description = "The pinned box-js fork's simpleStringify writes the name-keyed maps snippets.json and resources.json as lists of nulls. The engine recognises snippets without them (see the snippet artifact), but a consumer gets no per-resource index; the NewResource IOCs in IOC.json carry the same records. Fix belongs in the box-js fork (lib.js), not this engine."
+description = "The pinned box-js fork's simpleStringify writes the name-keyed maps snippets.json and resources.json as lists of nulls, and resources.json is written before the newest resource is recorded, so it lags one entry behind. The engine recognises snippets without them (see the snippet artifact), but a consumer gets no per-resource index; the NewResource IOCs in IOC.json carry the same records. Fixed in the fork by https://github.com/wmetcalf/box-js/pull/1 (lib.js); this gap closes when the box-js submodule is bumped past that merge."
 
 [[gaps]]
 id = "killed-is-ok"
