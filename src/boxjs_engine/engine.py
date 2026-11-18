@@ -27,7 +27,7 @@ import shutil
 import signal
 import stat
 import subprocess
-import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -199,9 +199,10 @@ _JSE_TAIL = re.compile(rb"[A-Za-z0-9+/]{6}==\^#~@")
 
 def _is_jscript_encoded(path: Path) -> bool:
     """An opener followed, anywhere later, by a checksummed terminator. Both patterns are
-    fixed-length, so this is linear (a lazy `.*?` between them was quadratic)."""
+    fixed-length, so this is linear (a lazy `.*?` between them was quadratic). The whole
+    input is scanned (it is bounded by the worker's Limits.max_input_bytes)."""
     with path.open("rb") as f:
-        head = f.read(1 << 20)
+        head = f.read()
     start = _JSE_START.search(head)
     return start is not None and _JSE_TAIL.search(head, start.end()) is not None
 
@@ -374,36 +375,46 @@ class BoxJsEngine:
 
         killed = False
         before = {p.name for p in outdir.iterdir()}
-        # stdout/stderr go to files, not pipes: when box-js's own timeout fires, _run.js
-        # SIGTERMs analyze.js, whose sync-rpc worker (stdio inherited) is orphaned and would
-        # hold a pipe open until the wall clock. box-js runs in its own session so the whole
-        # group, orphans included, is killed once it exits.
-        with tempfile.TemporaryFile(dir=outdir) as out_f, \
-                tempfile.TemporaryFile(dir=outdir) as err_f:
-            # NEVER shell=True; argv is a fixed list. The worker is the sandbox.
-            started = time.monotonic()
-            proc = subprocess.Popen(  # fixed argv, no shell
-                argv, stdout=out_f, stderr=err_f, start_new_session=True)
+        # stdout is not needed (box-js logs to analysis.log) and the sample can flood it, so it
+        # goes to /dev/null; stderr goes through a pipe whose reader keeps only the last 2000
+        # bytes, so nothing the sample prints is spooled. When box-js's own timeout fires,
+        # _run.js SIGTERMs analyze.js and its sync-rpc worker (stdio inherited) is orphaned,
+        # still holding the pipe: box-js runs in its own session, and the whole group is
+        # killed once _run.js exits, which ends the pipe.
+        tail = bytearray()
+
+        def keep_tail(pipe) -> None:
+            for chunk in iter(lambda: pipe.read(65536), b""):
+                tail.extend(chunk)
+                del tail[:-2000]
+
+        # NEVER shell=True; argv is a fixed list. The worker is the sandbox.
+        started = time.monotonic()
+        proc = subprocess.Popen(  # fixed argv, no shell
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            start_new_session=True)
+        reader = threading.Thread(target=keep_tail, args=(proc.stderr,), daemon=True)
+        reader.start()
+        try:
+            # Wall-clock guard above box-js's own budget, so a wedged node process cannot
+            # outlive the job.
+            code = proc.wait(timeout=limits.timeout_s + 10)
+            elapsed = time.monotonic() - started
+        except subprocess.TimeoutExpired:
+            killed, code, elapsed = True, -9, float(limits.timeout_s + 10)
+            warnings.append(Warning(
+                code="timeout",
+                message=f"box-js exceeded {limits.timeout_s + 10}s wall clock",
+            ))
+        finally:
             try:
-                # Wall-clock guard above box-js's own budget, so a wedged node process
-                # cannot outlive the job.
-                code = proc.wait(timeout=limits.timeout_s + 10)
-                elapsed = time.monotonic() - started
-            except subprocess.TimeoutExpired:
-                killed, code, elapsed = True, -9, float(limits.timeout_s + 10)
-                warnings.append(Warning(
-                    code="timeout",
-                    message=f"box-js exceeded {limits.timeout_s + 10}s wall clock",
-                ))
-            finally:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
-                proc.wait()
-            err_f.seek(0, os.SEEK_END)
-            err_f.seek(max(0, err_f.tell() - 2000))
-            stderr = err_f.read()
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.wait()
+            reader.join(timeout=5)
+            proc.stderr.close()
+        stderr = bytes(tail)
         # box-js's own --timeout makes _run.js print a line and exit 0. stdout is the sample's
         # to write too (console.log), so it is judged by the clock instead: a run that lasted
         # its whole emulation budget was cut short (or ended at the wire; flagged either way).

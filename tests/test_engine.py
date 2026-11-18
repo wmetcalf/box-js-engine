@@ -412,3 +412,53 @@ def test_files_written_before_a_self_exit_4_are_kept(tmp_path, monkeypatch):
     res, _ = _detonate(tmp_path, monkeypatch, body)
     assert res.status == "ok"
     assert "payload.bin" in {a.id for a in res.artifacts}
+
+
+def test_a_stdout_flood_is_not_spooled_to_disk(tmp_path, monkeypatch):
+    """stdout is unused and stderr keeps only a tail: nothing a sample prints is stored."""
+    import shutil as _sh
+    import threading
+
+    free_before = _sh.disk_usage(tmp_path).free
+    lowest = [free_before]
+    done = threading.Event()
+
+    def watch():
+        while not done.is_set():
+            lowest[0] = min(lowest[0], _sh.disk_usage(tmp_path).free)
+            done.wait(0.01)
+
+    t = threading.Thread(target=watch)
+    t.start()
+    body = ("const chunk = 'A'.repeat(1 << 20);\n"
+            "for (let i = 0; i < 300; i++) { process.stdout.write(chunk); process.stderr.write(chunk); }\n")
+    try:
+        res, _ = _detonate(tmp_path, monkeypatch, body)
+    finally:
+        done.set()
+        t.join()
+    assert res.status == "ok"
+    # 600 MiB printed; at no point was more than a little of it on disk.
+    assert free_before - lowest[0] < (64 << 20)
+
+
+def test_stderr_tail_is_kept_for_a_failed_run(tmp_path, monkeypatch):
+    from blastbox.limits import Limits
+
+    from boxjs_engine.engine import RUN_JS_ENV, BoxJsEngine
+
+    run_js = tmp_path / "run.js"
+    run_js.write_text("process.stderr.write('x'.repeat(5000) + 'TAILMARK'); process.exit(3)")
+    monkeypatch.setenv(RUN_JS_ENV, str(run_js))
+    (tmp_path / "s.js").write_text("1")
+    res = BoxJsEngine().detonate(tmp_path / "s.js", tmp_path, Limits())
+    tail = res.payload.fields["stderr_tail"]
+    assert tail.endswith("TAILMARK") and len(tail) <= 2000
+
+
+def test_the_jse_check_covers_the_whole_input(tmp_path):
+    from boxjs_engine.engine import _is_jscript_encoded
+
+    p = tmp_path / "s.js"
+    p.write_bytes(b"var a = 1;\n" + b"/" * (2 << 20) + b"\n//**Start Encode**#@~^IgAAAA==body IAAAAA==^#~@")
+    assert _is_jscript_encoded(p) is True

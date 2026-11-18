@@ -11,7 +11,7 @@ formats = ["js", "jse", "wsf", "wsh", "hta"]
 network = ["none"]
 # No input cap in the engine; the worker's Limits apply.
 # rejected (error and warning share the code):
-#   jscript_encoded - the input holds a JScript.Encode block (first 1 MiB), box-js exited 4
+#   jscript_encoded - the input holds a JScript.Encode block, box-js exited 4
 #                     and logged nothing: it has no decoder, so the encoded body is a parse
 #                     error. Plain-text .jse runs.
 #   unparseable     - box-js exited 4 (Acorn could not parse the input, or box-js's own
