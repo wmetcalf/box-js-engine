@@ -121,7 +121,11 @@ def test_snippet_and_dropped_counts_follow_the_worker_limits():
 def test_a_jscript_encoded_script_is_a_rejection_that_conforms(tmp_path, monkeypatch):
     run_js = tmp_path / "box-js" / "run.js"
     run_js.parent.mkdir()
-    run_js.write_text("process.exit(4)")
+    run_js.write_text(          # box-js makes its results dir, then fails to parse (exit 4)
+        "const fs = require('fs'), path = require('path');\n"
+        "const out = process.argv.find((a) => a.startsWith('--output-dir=')).slice(13);\n"
+        "fs.mkdirSync(path.join(out, path.basename(process.argv[2]) + '.results'));\n"
+        "process.exit(4);\n")
     monkeypatch.setenv(RUN_JS_ENV, str(run_js))
     sample = tmp_path / "s.jse"
     sample.write_bytes(b"#@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@")

@@ -145,17 +145,8 @@ def test_vbs_is_not_claimed_box_js_has_no_vbscript_interpreter():
 def test_a_jscript_encoded_script_is_rejected_not_reported_ok(tmp_path, monkeypatch):
     """box-js does not decode JScript.Encode (it exits 4 asking for an external decoder), so
     an encoded script must not come back as a clean, empty `ok` analysis."""
-    from blastbox.limits import Limits
-
-    from boxjs_engine.engine import BoxJsEngine
-
-    run_js = tmp_path / "box-js" / "run.js"
-    run_js.parent.mkdir()
-    run_js.write_text("process.exit(4)")
-    monkeypatch.setenv("BOXJS_RUN_JS", str(run_js))
-    sample = tmp_path / "s.jse"
-    sample.write_bytes(b"\xef\xbb\xbf  #@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@")
-    res = BoxJsEngine().detonate(sample, tmp_path, Limits())
+    res, _ = _detonate(tmp_path, monkeypatch, "process.exit(4);",
+                       b"\xef\xbb\xbf  #@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@", name="s.jse")
     assert res.status == "rejected"
     assert [w.code for w in res.warnings] == ["jscript_encoded"]
     assert res.payload.fields["error"] == "jscript_encoded"
@@ -212,11 +203,40 @@ def test_an_input_box_js_cannot_parse_is_rejected_not_an_empty_ok(tmp_path, monk
     assert [w.code for w in res.warnings] == ["unparseable"]
 
 
-def test_a_jscript_encoded_block_after_a_header_is_rejected(tmp_path, monkeypatch):
-    """screnc keeps the text before //**Start Encode** plain, so the marker is mid-file."""
+def test_a_jscript_encoded_block_after_a_header_is_flagged(tmp_path, monkeypatch):
+    """screnc keeps the text before //**Start Encode** plain, so the marker is mid-file and
+    box-js parses the block as a comment (exit 0). That parses, so it is not a rejection, but
+    the result says the encoded block went unanalysed. (A plain script quoting a whole block
+    in a string looks the same, and is not thrown away.)"""
     data = b"// Copyright Contoso\r\n//**Start Encode**#@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@\r\n"
     res, _ = _detonate(tmp_path, monkeypatch, "process.exit(0);", data, name="s.jse")
-    assert res.status == "rejected" and res.payload.fields["error"] == "jscript_encoded"
+    assert res.status == "ok"
+    assert "jscript_encoded_not_decoded" in [w.code for w in res.warnings]
+
+
+def test_an_encoded_input_with_no_results_dir_is_an_engine_error(tmp_path, monkeypatch):
+    from blastbox.limits import Limits
+
+    from boxjs_engine.engine import RUN_JS_ENV, BoxJsEngine
+
+    run_js = tmp_path / "run.js"
+    run_js.write_text("process.exit(1)")       # box-js broken before making its results dir
+    monkeypatch.setenv(RUN_JS_ENV, str(run_js))
+    (tmp_path / "s.jse").write_bytes(b"#@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@")
+    res = BoxJsEngine().detonate(tmp_path / "s.jse", tmp_path, Limits())
+    assert res.status == "engine_error" and res.payload.fields["error"] == "no_results_dir"
+
+
+def test_script_output_cannot_fake_box_js_timeout(tmp_path, monkeypatch):
+    body = "console.log('[info] Script output: Analysis for s.js timed out.'); process.exit(0);\n"
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert "timeout" not in [w.code for w in res.warnings]
+
+
+def test_a_zero_index_decoy_is_not_box_js_dir(tmp_path):
+    (tmp_path / "sample.js.results").mkdir()
+    (tmp_path / "sample.js.0.results").mkdir()           # box-js never makes index 0
+    assert _results_dir(tmp_path, Path("sample.js")).name == "sample.js.results"
 
 
 def test_box_js_exiting_is_not_held_by_a_child_keeping_its_pipes(tmp_path, monkeypatch):
@@ -262,7 +282,7 @@ def test_hostile_json_in_the_results_dir_is_ignored(tmp_path):
 def test_every_non_ok_payload_carries_a_schema_version(tmp_path, monkeypatch):
     from boxjs_engine.engine import SCHEMA_VERSION
 
-    for body, data in (("process.exit(4);", b"x"), ("", b"#@~^IgAAAA==xIAAAAA==^#~@")):
+    for body, data in (("process.exit(4);", b"x"), ("process.exit(4); ", b"#@~^IgAAAA==xIAAAAA==^#~@")):
         sub = tmp_path / str(len(body))
         sub.mkdir()
         res, _ = _detonate(sub, monkeypatch, body, data)

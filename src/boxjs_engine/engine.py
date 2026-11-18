@@ -104,7 +104,7 @@ def _results_dir(outdir: Path, sample: Path, before: set[str] | frozenset[str] =
     before the run (`before`), the lowest index is the one box-js took: the sample can write
     anywhere in outdir, so another *.results dir, or a higher index it planted later, is never
     taken."""
-    pattern = re.compile(re.escape(sample.name) + r"(?:\.([0-9]{1,6}))?\.results")
+    pattern = re.compile(re.escape(sample.name) + r"(?:\.([1-9][0-9]{0,5}))?\.results")
     found = []
     for p in outdir.iterdir():
         m = pattern.fullmatch(p.name)
@@ -386,7 +386,9 @@ class BoxJsEngine:
             # _run.js prints this and exits 0 when box-js's own --timeout ends the analysis.
             out_f.seek(0, os.SEEK_END)
             out_f.seek(max(0, out_f.tell() - 4096))
-            own_timeout = b" timed out." in out_f.read()
+            # Exactly _run.js's line; script output reaches stdout too, but prefixed.
+            own_timeout = (f"Analysis for {input.name} timed out.".encode()
+                           in out_f.read().splitlines())
         if own_timeout and not killed:
             warnings.append(Warning(
                 code="timeout",
@@ -399,9 +401,11 @@ class BoxJsEngine:
         summary = (_summarise(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes))
                    if results is not None else None)
         silent = summary is None or summary["ioc_count"] <= 1
-        if encoded and silent and not killed:
-            # box-js has no JScript.Encode decoder: the encoded body is a parse error (exit 4)
-            # or, after a //**Start Encode** header, one long comment that runs nothing.
+        if encoded and silent and code == 4 and not killed and results is not None:
+            # box-js has no JScript.Encode decoder: the encoded body is a parse error (exit 4).
+            # (After a //**Start Encode** header it is one long comment that parses: that run
+            # is ok with warning jscript_encoded_not_decoded, below, as is a plain script that
+            # merely quotes a block; the two cannot be told apart without lexing.)
             return DetonationResult(
                 payload=Record(fields={"schema_version": SCHEMA_VERSION,
                                        "error": "jscript_encoded"}),
