@@ -24,7 +24,10 @@ import json
 import os
 import re
 import shutil
+import signal
+import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 from blastbox.contract import DeclaredArtifact, Detection, Record, Warning
@@ -94,21 +97,44 @@ def _extra_argv() -> list[str]:
     return [str(x) for x in got] if isinstance(got, list) else []
 
 
-def _results_dir(outdir: Path) -> Path | None:
+def _results_dir(outdir: Path, sample: Path) -> Path | None:
     """box-js writes `<outdir>/<sample name>.results/`, and appends `.1`, `.2` … if
-    that already exists. We give it a fresh outdir per job, so there is normally
-    exactly one; take the newest if a retry left more behind."""
-    found = sorted(
-        (p for p in outdir.iterdir() if p.is_dir() and p.name.endswith(".results")),
-        key=lambda p: p.stat().st_mtime,
-    )
-    return found[-1] if found else None
+    that already exists. Only that name is the run's: the sample can write anywhere in
+    outdir, so another *.results dir (a decoy with a newer mtime) is never taken."""
+    pattern = re.compile(re.escape(sample.name) + r"\.results(?:\.([0-9]{1,6}))?")
+    found = []
+    for p in outdir.iterdir():
+        m = pattern.fullmatch(p.name)
+        if m and _is_dir(p):
+            found.append((int(m.group(1) or 0), p))
+    return max(found)[1] if found else None
+
+
+def _is_dir(p: Path) -> bool:
+    try:
+        return stat.S_ISDIR(p.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _is_regular(p: Path) -> bool:
+    """A regular file, not a symlink, FIFO or device the sample planted in its results dir."""
+    try:
+        return stat.S_ISREG(p.lstat().st_mode)
+    except OSError:
+        return False
+
+
+#: box-js's JSON files are small; anything bigger is not worth parsing for counts.
+_MAX_JSON_BYTES = 64 << 20
 
 
 def _load_json(path: Path, default):
+    if not _is_regular(path) or path.lstat().st_size > _MAX_JSON_BYTES:
+        return default
     try:
         return json.loads(path.read_text(errors="replace"))
-    except (OSError, ValueError):   # unreadable, or not JSON (JSONDecodeError)
+    except (OSError, ValueError, RecursionError):   # unreadable, not JSON, or too deep
         return default
 
 
@@ -142,14 +168,15 @@ def _summarise(results: Path) -> dict:
     }
 
 
-# JScript.Encode's marker: the encoded body starts "#@~^" (optionally after a BOM/whitespace).
-_JSE_MARKER = b"#@~^"
+# A JScript.Encode block: "#@~^", a 6-char base64 length, "==", ..., "^#~@". screnc keeps
+# the text before //**Start Encode** plain, so the block need not start the file.
+_JSE_BLOCK = re.compile(rb"#@~\^[A-Za-z0-9+/]{6}==")
 
 
 def _is_jscript_encoded(path: Path) -> bool:
     with path.open("rb") as f:
-        head = f.read(4096)
-    return head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(_JSE_MARKER)
+        head = f.read(1 << 20)
+    return _JSE_BLOCK.search(head) is not None
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -177,7 +204,7 @@ def _snippet_names(results: Path) -> set[str]:
     }
     longest = max((len(c.encode("utf-8", "replace")) for c in commands), default=-1)
     for p in results.iterdir():
-        if not p.is_file():
+        if not _is_regular(p):
             continue
         logged_js = p.suffix == ".js" and _UUID.fullmatch(p.stem)
         run_command = (_UUID.fullmatch(p.name) and p.stat().st_size <= longest
@@ -185,6 +212,18 @@ def _snippet_names(results: Path) -> set[str]:
         if (logged_js or run_command) and p.name not in resources:
             names.add(p.name)
     return names
+
+
+def _artifact_id(name: str, taken: set[str]) -> str:
+    """A unique artifact id in blastbox's [A-Za-z0-9._-]{1,128} for a file name the sample
+    may have chosen (a download keeps its own name: "Invoice (1).pdf")."""
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120] or "_"
+    candidate, n = base, 1
+    while candidate in taken:
+        n += 1
+        candidate = f"{base}-{n}"
+    taken.add(candidate)
+    return candidate
 
 
 def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
@@ -196,6 +235,7 @@ def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
     three-hundredth dropped blob.
     """
     artifacts: list[DeclaredArtifact] = []
+    ids: set[str] = set()
     total = 0
     snippets = _snippet_names(results)
 
@@ -214,7 +254,7 @@ def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
             return False
         total += size
         artifacts.append(DeclaredArtifact(
-            id=path.name.replace("/", "_")[:128],
+            id=_artifact_id(path.name, ids),
             path=str(path.relative_to(outdir)),
             kind=kind,
         ))
@@ -223,14 +263,14 @@ def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
     for name in _ANALYSIS_FILES:
         p = results / name
         # A refused analysis file is never silent, and a smaller one after it may fit.
-        if p.is_file() and not add(p, "analysis"):
+        if _is_regular(p) and not add(p, "analysis"):
             warnings.append(Warning(
                 code="artifacts_truncated",
                 message=f"analysis file {name} omitted: artifact budget exhausted",
             ))
 
     dropped = sorted((p for p in results.iterdir()
-                      if p.is_file() and p.name not in _ANALYSIS_FILES),
+                      if _is_regular(p) and p.name not in _ANALYSIS_FILES),
                      key=lambda p: p.stat().st_size)
     for p in dropped:
         if not add(p, "snippet" if p.name in snippets else "dropped"):
@@ -246,8 +286,9 @@ class BoxJsEngine:
     """Detonate a JScript/JS sample with box-js and seal its IOCs and dropped files."""
 
     name = "boxjs"
-    # No vbs: box-js has no VBScript interpreter (acorn rejects the source, and HTA
-    # <script language=vbscript> blocks are skipped), so a .vbs run is a silent no-op.
+    # No vbs: box-js has no VBScript interpreter. wsf/wsh/hta are listed because Loadout
+    # routes them here, but box-js parses raw JScript only: those containers make it exit 4,
+    # which the engine returns as rejected/unparseable (contract gap containers-not-unpacked).
     formats = frozenset({"js", "jse", "wsf", "wsh", "hta"})
 
     def detect(self, input: Path) -> Detection:
@@ -317,23 +358,36 @@ class BoxJsEngine:
         ]
 
         killed = False
-        try:
+        # stdout/stderr go to files, not pipes: when box-js's own timeout fires, _run.js
+        # SIGTERMs analyze.js, whose sync-rpc worker (stdio inherited) is orphaned and would
+        # hold a pipe open until the wall clock. box-js runs in its own session so the whole
+        # group, orphans included, is killed once it exits.
+        with tempfile.TemporaryFile(dir=outdir) as out_f, \
+                tempfile.TemporaryFile(dir=outdir) as err_f:
             # NEVER shell=True; argv is a fixed list. The worker is the sandbox.
-            # Wall-clock guard sits above box-js's own budget so a wedged node
-            # process cannot outlive the job.
-            proc = subprocess.run(  # fixed argv, no shell
-                argv, capture_output=True, check=False,
-                timeout=limits.timeout_s + 10,
-            )
-            code, stderr = proc.returncode, proc.stderr
-        except subprocess.TimeoutExpired as exc:
-            killed, code, stderr = True, -9, (exc.stderr or b"")
-            warnings.append(Warning(
-                code="timeout",
-                message=f"box-js exceeded {limits.timeout_s + 10}s wall clock",
-            ))
+            proc = subprocess.Popen(  # fixed argv, no shell
+                argv, stdout=out_f, stderr=err_f, start_new_session=True)
+            try:
+                # Wall-clock guard above box-js's own budget, so a wedged node process
+                # cannot outlive the job.
+                code = proc.wait(timeout=limits.timeout_s + 10)
+            except subprocess.TimeoutExpired:
+                killed, code = True, -9
+                warnings.append(Warning(
+                    code="timeout",
+                    message=f"box-js exceeded {limits.timeout_s + 10}s wall clock",
+                ))
+            finally:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.wait()
+            err_f.seek(0, os.SEEK_END)
+            err_f.seek(max(0, err_f.tell() - 2000))
+            stderr = err_f.read()
 
-        results = _results_dir(outdir)
+        results = _results_dir(outdir, input)
         if results is None:
             # box-js produced no results directory at all. This is the failure mode
             # violet_svg used to report as a vague "no results": surface the exit
@@ -353,6 +407,20 @@ class BoxJsEngine:
                     message="box-js wrote no .results directory",
                 )],
                 status="engine_error",
+            )
+
+        if code == 4 and not killed:
+            # Acorn could not parse the input (box-js's exit 4): a WSF/HTA container, a .wsh,
+            # an encoded or broken script. box-js still made its results dir, which would read
+            # as a clean, empty analysis.
+            return DetonationResult(
+                payload=Record(fields={"schema_version": SCHEMA_VERSION, "error": "unparseable",
+                                       "exit_code": code}),
+                artifacts=[],
+                detected=self.detect(input),
+                warnings=[Warning(code="unparseable",
+                                  message="box-js could not parse the input as JScript")],
+                status="rejected",
             )
 
         summary = _summarise(results)

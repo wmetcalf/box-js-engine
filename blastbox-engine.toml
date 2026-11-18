@@ -10,9 +10,12 @@ formats = ["js", "jse", "wsf", "wsh", "hta"]
 # Built to run offline (--fake-download). See gap egress-mode for Limits.net_egress.
 network = ["none"]
 # No input cap in the engine; the worker's Limits apply.
-# rejected: a JScript.Encode-encoded script (any format, usually .jse). box-js has no decoder
-# and would exit 4 after creating its results dir, which reads as a clean, empty analysis;
-# the engine refuses it up front with error/warning jscript_encoded. Plain-text .jse runs.
+# rejected (error and warning share the code):
+#   jscript_encoded - a JScript.Encode block anywhere in the first 1 MiB; box-js has no
+#                     decoder, so it is refused before running. Plain-text .jse runs.
+#   unparseable     - box-js exited 4: Acorn could not parse the input as JScript (see gap
+#                     containers-not-unpacked). box-js still makes its results dir, which
+#                     would otherwise read as a clean, empty analysis.
 statuses = ["ok", "rejected", "engine_error"]
 
 # Everything lives under `<sample name>.results/`, box-js's own output directory. The analysis
@@ -55,7 +58,7 @@ id = "active_urls.json"
 path = "*.results/active_urls.json"
 kind = "analysis"
 role = "active_url_list"
-description = "JSON list of URLs box-js judged live: the URL fetched last before the sample saved a file that `file` calls executable. Written only then, so usually absent offline (--fake-download bodies are rarely executables)."
+description = "JSON list of URLs box-js judged live: the URL it logged last (a fetch, but also a URL() constructor, an href or a navigation; reads of document.location are not logged) before the sample saved a file that `file` calls executable. A heuristic, not proof of a fetch. Written only then, so usually absent offline (--fake-download bodies are rarely executables)."
 
 [[artifacts]]
 id = "env_vars.json"
@@ -91,6 +94,8 @@ description = "Every other top-level file in the results dir: files the sample w
 # ok: Record{schema_version, exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs,
 #     write_iocs, url_iocs, url_count}. engine_error: Record{schema_version, error, ...}
 #     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).
+#     rejected: Record{schema_version, error} (jscript_encoded; unparseable adds exit_code).
+#     A harness-sealed engine_error (the engine raised) is Record{error} without schema_version.
 root = "record"
 node_types = ["record"]
 schema_version = "boxjs.result/1"
@@ -106,42 +111,26 @@ description = "Findings exist only inside the IOC.json artifact as box-js IOC ty
 
 [[gaps]]
 id = "killed-is-ok"
-description = "A run killed at the wall clock (Limits.timeout_s + 10) whose results dir exists is status ok with killed=true and warning timeout; a nonzero box-js exit_code is ok too. The results are partial."
+description = "box-js's own timeout (--timeout, 60% of Limits.timeout_s) ends the run with box-js's exit code and killed=false; only the engine's wall clock (Limits.timeout_s + 10) sets killed=true, exit_code -9 and warning timeout. Either way a run whose results dir exists is status ok and its results are partial; a nonzero exit_code other than 4 (rejected unparseable) is ok too."
 
 [[gaps]]
 id = "egress-mode"
 description = "With Limits.net_egress set the engine passes --download and box-js fetches next stages for real; the payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
 
 [[gaps]]
-id = "loadout-caps-refuse-whole-result"
-description = "Loadout's boxjs.map_outputs refuses the WHOLE result over 128 artifacts, any artifact over 8 MiB, or 32 MiB in total, while the engine bounds only by Limits (defaults 1000 / 50 MiB / 500 MiB) and Loadout sets no Limits: a sample that drops many or large files fails the job instead of being truncated."
+id = "containers-not-unpacked"
+description = "box-js parses raw JScript only: a WSF (<job>/<script>), an HTA (HTML with <script> blocks) or a .wsh (an INI settings file) is not unpacked, so Acorn fails, box-js exits 4 and the engine returns rejected/unparseable. The formats are listed because Loadout routes them here; extracting their script blocks before box-js runs is unbuilt (owner decision)."
 
 [[gaps]]
-id = "loadout-requires-ioc-json"
-description = "Loadout refuses an ok result with no artifacts or no IOC.json; the engine returns ok without IOC.json when box-js logged nothing or IOC.json was over budget (warning artifact_too_large)."
+id = "loadout-rejected-is-unavailable"
+description = "Loadout (feat/engine-contract) does not list boxjs in REJECTION_IS_VERDICT, so a rejected result (jscript_encoded, unparseable) reaches run_blastbox as EngineUnavailable ('engine could not run') rather than a verdict that this input is unsupported."
 
 [[gaps]]
-id = "loadout-exec-ioc-subset"
-description = "Loadout normalizes commands only from IOC types run/commandexec/wmi.getobject.run/wmi.getobject.create; the engine's exec_iocs also counts createshortcut, task, task path and task arguments, which Loadout keeps only inside the IOC.json report. FileWrite/NewResource IOCs are not mapped (the dropped files are)."
-
-[[gaps]]
-id = "loadout-ignores-payload"
-description = "Loadout reads no payload field (exit_code, killed, net_egress, counts); a killed run shows only through the generic rule that any warning (including no_observable_behaviour) marks coverage incomplete."
-
-[[gaps]]
-id = "loadout-ignores-active-urls"
-description = "Loadout parses URLs only from urls.json (http/https with a host); active_urls.json and UrlFetch/XMLHTTP IOC values (value.url) are retained as report files but not normalized. The engine declares active_urls.json whenever box-js writes it (see that artifact for when)."
-
-[[gaps]]
-id = "loadout-snippets-unlabelled"
-description = "The engine declares box-js's code as kind=snippet and env_vars.json as kind=analysis, so Loadout's map_outputs no longer calls them recovered_file, but it maps every non-dropped kind to analysis_role report; a snippet is not labelled as code the sample executed or ran."
-
-[[gaps]]
-id = "loadout-emits-text-message-unproduced"
-description = "Loadout's boxjs EngineManifest emits lists text_message, but map_outputs creates only file, script and url artifacts."
+id = "results-dir-trusted"
+description = "box-js gives the sample's sandbox the host require (a known box-js residual), so a sample can write anything into its results dir. The engine reads only the run's own <sample>.results dir, declares only regular files (no symlinks, FIFOs or devices) under sanitized ids, and ignores JSON it cannot parse, but the contents of those files are the sample's to forge."
 
 [[consumers]]
 name = "loadout"
 engine = "boxjs"
 mapper = "backend/loadout/boxjs.py:map_outputs"
-emits = ["file", "script", "url", "text_message"]
+emits = ["file", "script", "url"]
