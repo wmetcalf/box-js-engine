@@ -531,3 +531,8 @@ def test_snippet_discovery_reads_each_inode_once(tmp_path, monkeypatch):
     monkeypatch.setattr(_P, "read_bytes", lambda self: (reads.append(self.name), orig(self))[1])
     engine._snippet_names(r)
     assert len(reads) == 1
+
+
+def test_a_signal_killed_silent_run_is_an_engine_error(tmp_path, monkeypatch):
+    res, _ = _detonate(tmp_path, monkeypatch, "process.kill(process.pid, 'SIGSEGV');")
+    assert res.status == "engine_error" and res.payload.fields["error"] == "box_js_failed"

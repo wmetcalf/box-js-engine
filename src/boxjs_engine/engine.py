@@ -501,8 +501,9 @@ class BoxJsEngine:
                 status="rejected",
             )
 
-        if code not in (0, 4) and code >= 0 and not killed and silent:
-            # box-js failed before emulating anything (exit 3: its own rewrite failed). Not a
+        if code not in (0, 4) and not killed and silent:
+            # box-js failed before emulating anything (exit 3: its own rewrite failed; or a
+            # signal killed it, a negative code). Not a
             # verdict on the input, and not an empty analysis either.
             return DetonationResult(
                 payload=Record(fields={"schema_version": SCHEMA_VERSION, "error": "box_js_failed",
