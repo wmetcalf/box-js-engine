@@ -175,23 +175,16 @@ def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
 # "==^#~@". screnc keeps the text before //**Start Encode** plain, so the block need not
 # start the file. A match only matters if box-js then logs nothing (see detonate).
 _JSE_START = re.compile(rb"#@~\^[A-Za-z0-9+/]{6}==")
-_JSE_END = b"==^#~@"
-_JSE_CHECKSUM = re.compile(rb"[A-Za-z0-9+/]{6}")
+_JSE_TAIL = re.compile(rb"[A-Za-z0-9+/]{6}==\^#~@")
 
 
 def _is_jscript_encoded(path: Path) -> bool:
-    """One linear pass: each opener is followed to its own terminator with bytes.find."""
+    """An opener followed, anywhere later, by a checksummed terminator. Both patterns are
+    fixed-length, so this is linear (a lazy `.*?` between them was quadratic)."""
     with path.open("rb") as f:
         head = f.read(1 << 20)
-    end = head.find(_JSE_END)
-    for m in _JSE_START.finditer(head):
-        if end != -1 and end < m.end():
-            end = head.find(_JSE_END, m.end())
-        if end == -1:
-            return False
-        if _JSE_CHECKSUM.fullmatch(head, end - 6, end):
-            return True
-    return False
+    start = _JSE_START.search(head)
+    return start is not None and _JSE_TAIL.search(head, start.end()) is not None
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")

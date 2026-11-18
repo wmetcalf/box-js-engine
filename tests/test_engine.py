@@ -343,3 +343,13 @@ def test_a_planted_higher_index_results_dir_is_not_taken(tmp_path, monkeypatch):
     res, _ = _detonate(tmp_path, monkeypatch, body)
     assert res.payload.fields["results_dir"] == "s.js.results"
     assert res.payload.fields["exec_iocs"] == 1
+
+
+def test_the_jse_check_finds_a_block_after_a_bad_terminator(tmp_path):
+    from boxjs_engine.engine import _is_jscript_encoded
+
+    p = tmp_path / "s.js"
+    p.write_bytes(b"#@~^AAAAAA== x ==^#~@ then #@~^IgAAAA==body IAAAAA==^#~@")
+    assert _is_jscript_encoded(p) is True
+    p.write_bytes(b"var s = '#@~^AAAAAA==';")
+    assert _is_jscript_encoded(p) is False
