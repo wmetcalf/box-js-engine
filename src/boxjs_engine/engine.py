@@ -418,7 +418,10 @@ class BoxJsEngine:
         # exit 4 itself (host require), and a plain script can quote a JSE marker.
         summary = (_summarise(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes))
                    if results is not None else None)
-        silent = summary is None or summary["ioc_count"] <= 1
+        # Nothing logged and nothing written but box-js's own log/index files.
+        silent = summary is None or (
+            summary["ioc_count"] <= 1
+            and all(p.name in ("analysis.log", "IOC.json") for p in results.iterdir()))
         if encoded and silent and code == 4 and not killed and results is not None:
             # box-js has no JScript.Encode decoder: the encoded body is a parse error (exit 4).
             # (After a //**Start Encode** header it is one long comment that parses: that run

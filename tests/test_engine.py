@@ -404,3 +404,11 @@ def test_extra_argv_cannot_override_the_budget(monkeypatch):
     monkeypatch.setenv(EXTRA_ARGV_ENV, json.dumps(
         ["--timeout=4", "--strip-timeout", "9", "--preprocess-timeout=1", "--no-rewrite"]))
     assert _extra_argv() == ["--no-rewrite"]
+
+
+def test_files_written_before_a_self_exit_4_are_kept(tmp_path, monkeypatch):
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n"
+            "fs.writeFileSync(path.join(res, 'payload.bin'), 'MZ');\nprocess.exit(4);\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert res.status == "ok"
+    assert "payload.bin" in {a.id for a in res.artifacts}
