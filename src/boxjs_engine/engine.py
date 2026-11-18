@@ -95,7 +95,25 @@ def _extra_argv() -> list[str]:
         got = json.loads(raw)
     except json.JSONDecodeError:
         return []
-    return [str(x) for x in got] if isinstance(got, list) else []
+    if not isinstance(got, list):
+        return []
+    # The budget flags are the engine's: box-js takes the last one given, so an extra
+    # --timeout would replace the emulation budget the timeout warning is measured against.
+    out: list[str] = []
+    skip = False
+    for x in map(str, got):
+        if skip:
+            skip = False
+            continue
+        flag = x.split("=", 1)[0]
+        if flag in _BUDGET_FLAGS:
+            skip = "=" not in x
+            continue
+        out.append(x)
+    return out
+
+
+_BUDGET_FLAGS = frozenset({"--timeout", "--strip-timeout", "--preprocess-timeout"})
 
 
 def _results_dir(outdir: Path, sample: Path, before: set[str] | frozenset[str] = frozenset()

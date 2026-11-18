@@ -396,3 +396,11 @@ def test_the_jse_check_finds_a_block_after_a_bad_terminator(tmp_path):
     assert _is_jscript_encoded(p) is True
     p.write_bytes(b"var s = '#@~^AAAAAA==';")
     assert _is_jscript_encoded(p) is False
+
+
+def test_extra_argv_cannot_override_the_budget(monkeypatch):
+    from boxjs_engine.engine import EXTRA_ARGV_ENV, _extra_argv
+
+    monkeypatch.setenv(EXTRA_ARGV_ENV, json.dumps(
+        ["--timeout=4", "--strip-timeout", "9", "--preprocess-timeout=1", "--no-rewrite"]))
+    assert _extra_argv() == ["--no-rewrite"]
