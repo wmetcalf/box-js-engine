@@ -109,3 +109,10 @@ def test_a_sealed_real_detonation_conforms(tmp_path, monkeypatch):
     assert meta["status"] == "ok"
     assert meta["input_sha256"] == hashlib.sha256(sample.read_bytes()).hexdigest()
     ec.assert_conforms(CONTRACT, meta)
+
+
+def test_snippet_and_dropped_counts_follow_the_worker_limits():
+    """The engine bounds them only by Limits.max_artifacts, which a worker may raise past
+    its 1000 default, so the contract must not cap them (max_count 0 = uncapped)."""
+    caps = {a.kind: a.max_count for a in CONTRACT.artifacts if a.kind in ("snippet", "dropped")}
+    assert caps == {"snippet": 0, "dropped": 0}

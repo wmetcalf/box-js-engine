@@ -72,17 +72,17 @@ description = "box-js's analysis log."
 id = "*"
 path = "*.results/*"
 kind = "snippet"
-max_count = 1000
+max_count = 0
 role = "code_snippet"
-description = "Code box-js saved, not a file the sample wrote: eval'd JS as <uuid>.js (lib.logJS; the first is the whole prepared sample) and each command passed to WScript.Shell Run as a bare <uuid> holding the command text verbatim (matched to its Run IOC), plus any name snippets.json keys. max_count is Limits.max_artifacts' default."
+description = "Code box-js saved, not a file the sample wrote: eval'd JS as <uuid>.js (lib.logJS; the first is the whole prepared sample) and each command passed to WScript.Shell Run as a bare <uuid> holding the command text verbatim (matched to its Run IOC), plus any name snippets.json keys. Uncapped here: the count is bounded by the worker's Limits.max_artifacts (default 1000), which a worker may raise."
 
 [[artifacts]]
 id = "*"
 path = "*.results/*"
 kind = "dropped"
-max_count = 1000
+max_count = 0
 role = "recovered_file"
-description = "Every other top-level file in the results dir: files the sample wrote (bare <uuid> names, see the NewResource IOCs), downloaded (<sha256>_<name>) or decoded payloads. max_count is Limits.max_artifacts' default."
+description = "Every other top-level file in the results dir: files the sample wrote (bare <uuid> names, see the NewResource IOCs), downloaded (<sha256>_<name>) or decoded payloads. Uncapped here: the count is bounded by the worker's Limits.max_artifacts (default 1000), which a worker may raise."
 
 [payload]
 # ok: Record{schema_version, exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs,
