@@ -99,6 +99,8 @@ description = "Every other top-level file in the results dir: files the sample w
 # ok: Record{schema_version, exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs,
 #     write_iocs, url_iocs, url_count}. engine_error: Record{schema_version, error, ...}
 #     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).
+#     box_js_failed: box-js exited nonzero (not 4) having logged and written nothing, e.g. 3
+#     when its own rewrite failed; adds exit_code + stderr_tail.
 #     rejected: Record{schema_version, error} (jscript_encoded; unparseable adds exit_code).
 #     A harness-sealed engine_error (the engine raised) is Record{error} without schema_version.
 root = "record"
@@ -116,7 +118,7 @@ description = "Findings exist only inside the IOC.json artifact as box-js IOC ty
 
 [[gaps]]
 id = "killed-is-ok"
-description = "A timed-out run whose results dir exists is status ok with partial results and warning timeout: box-js's own timeout (--timeout, 60% of Limits.timeout_s; recognised by the run lasting that long, since stdout is the sample's to write) leaves exit_code 0 and killed=false; the engine's wall clock (Limits.timeout_s + 10) sets killed=true and exit_code -9. A nonzero exit_code is ok too unless box-js exited 4 having logged nothing (rejected unparseable)."
+description = "A timed-out run whose results dir exists is status ok with partial results and warning timeout: box-js's own timeout (--timeout, 60% of Limits.timeout_s; recognised by the run lasting that long, since stdout is the sample's to write) leaves exit_code 0 and killed=false; the engine's wall clock (Limits.timeout_s + 10) sets killed=true and exit_code -9. A nonzero exit_code is ok too unless box-js logged and wrote nothing: exit 4 is then rejected unparseable, any other nonzero exit engine_error box_js_failed."
 
 [[gaps]]
 id = "egress-mode"

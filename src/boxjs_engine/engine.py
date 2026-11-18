@@ -231,26 +231,41 @@ def _snippet_names(results: Path) -> set[str]:
         and isinstance(e.get("value"), dict) and isinstance(e["value"].get("command"), str)
     }
     longest = max((len(c.encode("utf-8", "replace")) for c in commands), default=-1)
+    # Each file's bytes are read at most once per inode (hard links share one), so planted
+    # links cannot multiply the reading.
+    seen: dict[tuple[int, int], bool] = {}
     for p in results.iterdir():
         if not _is_regular(p):
             continue
         logged_js = p.suffix == ".js" and _UUID.fullmatch(p.stem)
-        run_command = (_UUID.fullmatch(p.name) and p.stat().st_size <= longest
-                       and p.read_bytes().decode("utf-8", "replace") in commands)
+        run_command = False
+        if _UUID.fullmatch(p.name):
+            st = p.lstat()
+            if st.st_size <= longest:
+                key = (st.st_dev, st.st_ino)
+                if key not in seen:
+                    seen[key] = p.read_bytes().decode("utf-8", "replace") in commands
+                run_command = seen[key]
         if (logged_js or run_command) and p.name not in resources:
             names.add(p.name)
     return names
 
 
-def _artifact_id(name: str, taken: set[str]) -> str:
+#: blastbox's sealed envelope holds at most this many artifacts, whatever Limits says.
+_ENVELOPE_MAX_ARTIFACTS = 16384
+
+
+def _artifact_id(name: str, taken: dict[str, int]) -> str:
     """A unique artifact id in blastbox's [A-Za-z0-9._-]{1,128} for a file name the sample
-    may have chosen (a download keeps its own name: "Invoice (1).pdf")."""
+    may have chosen (a download keeps its own name: "Invoice (1).pdf"). `taken` maps each
+    id handed out to the next suffix to try for that base, so collisions stay linear."""
     base = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120] or "_"
-    candidate, n = base, 1
+    candidate, n = base, taken.get(base, 1)
     while candidate in taken:
         n += 1
         candidate = f"{base}-{n}"
-    taken.add(candidate)
+    taken[base] = n
+    taken.setdefault(candidate, 1)
     return candidate
 
 
@@ -263,13 +278,13 @@ def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
     three-hundredth dropped blob.
     """
     artifacts: list[DeclaredArtifact] = []
-    ids: set[str] = set()
+    ids: dict[str, int] = {}
     total = 0
     snippets = _snippet_names(results)
 
     def add(path: Path, kind: str) -> bool:
         nonlocal total
-        if len(artifacts) >= limits.max_artifacts:
+        if len(artifacts) >= min(limits.max_artifacts, _ENVELOPE_MAX_ARTIFACTS):
             return False
         size = path.stat().st_size
         if size > limits.max_artifact_bytes:
@@ -484,6 +499,20 @@ class BoxJsEngine:
                                   message="box-js could not parse the input (or its own "
                                           "rewrite of it) as JScript")],
                 status="rejected",
+            )
+
+        if code not in (0, 4) and code >= 0 and not killed and silent:
+            # box-js failed before emulating anything (exit 3: its own rewrite failed). Not a
+            # verdict on the input, and not an empty analysis either.
+            return DetonationResult(
+                payload=Record(fields={"schema_version": SCHEMA_VERSION, "error": "box_js_failed",
+                                       "exit_code": code,
+                                       "stderr_tail": stderr[-2000:].decode("utf-8", "replace")}),
+                artifacts=[],
+                detected=self.detect(input),
+                warnings=[Warning(code="box_js_failed",
+                                  message=f"box-js exited {code} having logged nothing")],
+                status="engine_error",
             )
 
         assert summary is not None

@@ -477,3 +477,57 @@ def test_a_descendant_outside_the_session_cannot_hold_the_run(tmp_path, monkeypa
     res, _ = _detonate(tmp_path, monkeypatch, body, timeout_s=2)
     assert time.monotonic() - t0 < 15
     assert res.status == "ok"
+
+
+def test_a_silent_box_js_failure_is_an_engine_error(tmp_path, monkeypatch):
+    """box-js exits 3 when its own rewrite fails before emulation starts."""
+    res, _ = _detonate(tmp_path, monkeypatch, "process.exit(3);")
+    assert res.status == "engine_error"
+    assert res.payload.fields["error"] == "box_js_failed" and res.payload.fields["exit_code"] == 3
+
+
+def test_declared_count_stays_under_the_envelope_ceiling(tmp_path):
+    from boxjs_engine.engine import _ENVELOPE_MAX_ARTIFACTS
+
+    class Big(_Limits):
+        max_artifacts = 70000
+        max_total_artifact_bytes = 1 << 30
+
+    r = _results(tmp_path, [{"type": "Sample Name"}])
+    for i in range(_ENVELOPE_MAX_ARTIFACTS + 5):
+        (r / f"f{i}").write_bytes(b"")
+    warns = []
+    arts = _declare_artifacts(r, tmp_path, Big(), warns)
+    assert len(arts) <= _ENVELOPE_MAX_ARTIFACTS
+    assert any(w.code == "artifacts_truncated" for w in warns)
+
+
+def test_colliding_names_get_ids_in_linear_time(tmp_path):
+    import time
+
+    from boxjs_engine.engine import _artifact_id
+
+    taken: dict[str, int] = {}
+    t0 = time.monotonic()
+    ids = [_artifact_id("x" * 130 + str(i), taken) for i in range(16000)]
+    assert time.monotonic() - t0 < 2
+    assert len(set(ids)) == len(ids)
+
+
+def test_snippet_discovery_reads_each_inode_once(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path as _P
+
+    from boxjs_engine import engine
+
+    cmd = "c" * 1000
+    r = _results(tmp_path, [{"type": "Run", "value": {"command": cmd}}])
+    first = r / "ab2dee1c-06b2-4f7e-901b-8273d423d049"
+    first.write_text(cmd)
+    for i in range(50):
+        os.link(first, r / f"ab2dee1c-06b2-4f7e-901b-{i:012d}")
+    reads = []
+    orig = _P.read_bytes
+    monkeypatch.setattr(_P, "read_bytes", lambda self: (reads.append(self.name), orig(self))[1])
+    engine._snippet_names(r)
+    assert len(reads) == 1
