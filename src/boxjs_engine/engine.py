@@ -101,7 +101,8 @@ def _results_dir(outdir: Path, sample: Path) -> Path | None:
     """box-js writes `<outdir>/<sample name>.results/`, and appends `.1`, `.2` … if
     that already exists. Only that name is the run's: the sample can write anywhere in
     outdir, so another *.results dir (a decoy with a newer mtime) is never taken."""
-    pattern = re.compile(re.escape(sample.name) + r"\.results(?:\.([0-9]{1,6}))?")
+    # box-js's _run.js: <name>.results, then <name>.<i>.results if that exists.
+    pattern = re.compile(re.escape(sample.name) + r"(?:\.([0-9]{1,6}))?\.results")
     found = []
     for p in outdir.iterdir():
         m = pattern.fullmatch(p.name)
@@ -129,8 +130,8 @@ def _is_regular(p: Path) -> bool:
 _MAX_JSON_BYTES = 64 << 20
 
 
-def _load_json(path: Path, default):
-    if not _is_regular(path) or path.lstat().st_size > _MAX_JSON_BYTES:
+def _load_json(path: Path, default, max_bytes: int = _MAX_JSON_BYTES):
+    if not _is_regular(path) or path.lstat().st_size > max_bytes:
         return default
     try:
         return json.loads(path.read_text(errors="replace"))
@@ -138,10 +139,10 @@ def _load_json(path: Path, default):
         return default
 
 
-def _summarise(results: Path) -> dict:
+def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
     """Lift counts out of IOC.json so a consumer can triage without opening artifacts."""
-    iocs = _load_json(results / "IOC.json", [])
-    urls = _load_json(results / "urls.json", [])
+    iocs = _load_json(results / "IOC.json", [], max_json_bytes)
+    urls = _load_json(results / "urls.json", [], max_json_bytes)
     if not isinstance(iocs, list):
         iocs = []
     if not isinstance(urls, list):
@@ -168,9 +169,10 @@ def _summarise(results: Path) -> dict:
     }
 
 
-# A JScript.Encode block: "#@~^", a 6-char base64 length, "==", ..., "^#~@". screnc keeps
-# the text before //**Start Encode** plain, so the block need not start the file.
-_JSE_BLOCK = re.compile(rb"#@~\^[A-Za-z0-9+/]{6}==")
+# A JScript.Encode block: "#@~^", a 6-char base64 length, "==", the body, a 6-char checksum,
+# "==^#~@". screnc keeps the text before //**Start Encode** plain, so the block need not
+# start the file. A match only matters if box-js then logs nothing (see detonate).
+_JSE_BLOCK = re.compile(rb"#@~\^[A-Za-z0-9+/]{6}==.*?[A-Za-z0-9+/]{6}==\^#~@", re.DOTALL)
 
 
 def _is_jscript_encoded(path: Path) -> bool:
@@ -319,19 +321,7 @@ class BoxJsEngine:
                 status="engine_error",
             )
 
-        if _is_jscript_encoded(input):
-            # box-js has no JScript.Encode decoder: it exits 4 asking for an external one,
-            # after creating its results dir, which would read as a clean, empty analysis.
-            return DetonationResult(
-                payload=Record(fields={"schema_version": SCHEMA_VERSION,
-                                       "error": "jscript_encoded"}),
-                artifacts=[],
-                detected=self.detect(input),
-                warnings=[Warning(code="jscript_encoded",
-                                  message="JScript.Encode script: box-js cannot decode it")],
-                status="rejected",
-            )
-
+        encoded = _is_jscript_encoded(input)
         warnings: list[Warning] = []
 
         # Split the worker's budget across box-js's stages. box-js defaults each
@@ -388,6 +378,23 @@ class BoxJsEngine:
             stderr = err_f.read()
 
         results = _results_dir(outdir, input)
+        # Judged on what box-js produced, not on the exit code or a marker alone: a sample can
+        # exit 4 itself (host require), and a plain script can quote a JSE marker.
+        summary = (_summarise(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes))
+                   if results is not None else None)
+        silent = summary is None or summary["ioc_count"] <= 1
+        if encoded and silent and not killed:
+            # box-js has no JScript.Encode decoder: the encoded body is a parse error (exit 4)
+            # or, after a //**Start Encode** header, one long comment that runs nothing.
+            return DetonationResult(
+                payload=Record(fields={"schema_version": SCHEMA_VERSION,
+                                       "error": "jscript_encoded"}),
+                artifacts=[],
+                detected=self.detect(input),
+                warnings=[Warning(code="jscript_encoded",
+                                  message="JScript.Encode script: box-js cannot decode it")],
+                status="rejected",
+            )
         if results is None:
             # box-js produced no results directory at all. This is the failure mode
             # violet_svg used to report as a vague "no results": surface the exit
@@ -409,7 +416,7 @@ class BoxJsEngine:
                 status="engine_error",
             )
 
-        if code == 4 and not killed:
+        if code == 4 and not killed and silent:
             # Acorn could not parse the input (box-js's exit 4): a WSF/HTA container, a .wsh,
             # an encoded or broken script. box-js still made its results dir, which would read
             # as a clean, empty analysis.
@@ -423,7 +430,7 @@ class BoxJsEngine:
                 status="rejected",
             )
 
-        summary = _summarise(results)
+        assert summary is not None
         artifacts = _declare_artifacts(results, outdir, limits, warnings)
 
         if summary["ioc_count"] <= 1:

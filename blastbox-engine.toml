@@ -11,11 +11,13 @@ formats = ["js", "jse", "wsf", "wsh", "hta"]
 network = ["none"]
 # No input cap in the engine; the worker's Limits apply.
 # rejected (error and warning share the code):
-#   jscript_encoded - a JScript.Encode block anywhere in the first 1 MiB; box-js has no
-#                     decoder, so it is refused before running. Plain-text .jse runs.
-#   unparseable     - box-js exited 4: Acorn could not parse the input as JScript (see gap
-#                     containers-not-unpacked). box-js still makes its results dir, which
-#                     would otherwise read as a clean, empty analysis.
+#   jscript_encoded - the input holds a JScript.Encode block (first 1 MiB) and box-js logged
+#                     nothing: it has no decoder, so the encoded body is a parse error or,
+#                     after a //**Start Encode** header, one long comment. Plain-text .jse runs.
+#   unparseable     - box-js exited 4 (Acorn could not parse the input; see gap
+#                     containers-not-unpacked) and logged nothing. box-js still makes its
+#                     results dir, which would otherwise read as a clean, empty analysis.
+# Both are judged on what box-js produced: a run that logged IOCs is ok whatever its exit code.
 statuses = ["ok", "rejected", "engine_error"]
 
 # Everything lives under `<sample name>.results/`, box-js's own output directory. The analysis

@@ -124,7 +124,7 @@ def test_a_jscript_encoded_script_is_a_rejection_that_conforms(tmp_path, monkeyp
     run_js.write_text("process.exit(4)")
     monkeypatch.setenv(RUN_JS_ENV, str(run_js))
     sample = tmp_path / "s.jse"
-    sample.write_bytes(b"#@~^IgAAAA==@#@&/mDkwOR?4.+^V^#~@")
+    sample.write_bytes(b"#@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@")
     out = tmp_path / "out"
     out.mkdir()
     res = BoxJsEngine().detonate(sample, out, Limits())

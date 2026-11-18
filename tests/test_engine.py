@@ -16,10 +16,11 @@ def _results(tmp_path: Path, iocs, urls=None) -> Path:
 def test_results_dir_is_the_samples_own(tmp_path):
     """A decoy *.results dir (newer mtime, another name) must not be taken for the run's."""
     (tmp_path / "sample.js.results").mkdir()
-    (tmp_path / "sample.js.results.1").mkdir()
+    (tmp_path / "sample.js.2.results").mkdir()     # box-js _run.js: <name>.<i>.results
+    (tmp_path / "sample.js.10.results").mkdir()
     (tmp_path / "zzz.results").mkdir()
     (tmp_path / "not-results").mkdir()
-    assert _results_dir(tmp_path, Path("sample.js")).name == "sample.js.results.1"
+    assert _results_dir(tmp_path, Path("sample.js")).name == "sample.js.10.results"
 
 
 def test_results_dir_none_when_absent(tmp_path):
@@ -149,7 +150,7 @@ def test_a_jscript_encoded_script_is_rejected_not_reported_ok(tmp_path, monkeypa
     run_js.write_text("process.exit(4)")
     monkeypatch.setenv("BOXJS_RUN_JS", str(run_js))
     sample = tmp_path / "s.jse"
-    sample.write_bytes(b"\xef\xbb\xbf  #@~^IgAAAA==@#@&/mDkwOR?4.+^V^#~@")
+    sample.write_bytes(b"\xef\xbb\xbf  #@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@")
     res = BoxJsEngine().detonate(sample, tmp_path, Limits())
     assert res.status == "rejected"
     assert [w.code for w in res.warnings] == ["jscript_encoded"]
@@ -209,7 +210,7 @@ def test_an_input_box_js_cannot_parse_is_rejected_not_an_empty_ok(tmp_path, monk
 
 def test_a_jscript_encoded_block_after_a_header_is_rejected(tmp_path, monkeypatch):
     """screnc keeps the text before //**Start Encode** plain, so the marker is mid-file."""
-    data = b"// Copyright Contoso\r\n//**Start Encode**#@~^IgAAAA==@#@&/mDkwOR?4.+^V^#~@\r\n"
+    data = b"// Copyright Contoso\r\n//**Start Encode**#@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@\r\n"
     res, _ = _detonate(tmp_path, monkeypatch, "process.exit(0);", data, name="s.jse")
     assert res.status == "rejected" and res.payload.fields["error"] == "jscript_encoded"
 
@@ -257,7 +258,7 @@ def test_hostile_json_in_the_results_dir_is_ignored(tmp_path):
 def test_every_non_ok_payload_carries_a_schema_version(tmp_path, monkeypatch):
     from boxjs_engine.engine import SCHEMA_VERSION
 
-    for body, data in (("process.exit(4);", b"x"), ("", b"#@~^IgAAAA==^#~@")):
+    for body, data in (("process.exit(4);", b"x"), ("", b"#@~^IgAAAA==xIAAAAA==^#~@")):
         sub = tmp_path / str(len(body))
         sub.mkdir()
         res, _ = _detonate(sub, monkeypatch, body, data)
@@ -276,3 +277,26 @@ def test_every_non_ok_payload_carries_a_schema_version(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "")
     res = BoxJsEngine().detonate(sub / "s.js", sub, Limits())
     assert res.status == "engine_error" and res.payload.fields["schema_version"] == SCHEMA_VERSION
+
+
+def test_exit_4_after_real_behaviour_is_not_a_rejection(tmp_path, monkeypatch):
+    """A sample can exit 4 itself (host require); evidence already logged must be kept."""
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
+            " {type: 'Run', value: {command: 'cmd /c whoami'}}]));\nprocess.exit(4);\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert res.status == "ok" and res.payload.fields["exec_iocs"] == 1
+
+
+def test_a_plain_script_quoting_a_jse_marker_is_analysed(tmp_path, monkeypatch):
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
+            " {type: 'Run', value: {command: 'cmd /c whoami'}}]));\n")
+    data = b"var m = '#@~^AAAAAA=='; new ActiveXObject('WScript.Shell').Run('cmd /c whoami');"
+    res, _ = _detonate(tmp_path, monkeypatch, body, data)
+    assert res.status == "ok"
+
+
+def test_a_large_ioc_json_within_the_artifact_budget_is_counted(tmp_path):
+    from boxjs_engine.engine import _summarise
+
+    r = _results(tmp_path, [{"type": "Sample Name"}, {"type": "Run", "value": {"command": "x" * (70 << 20)}}])
+    assert _summarise(r, max_json_bytes=128 << 20)["exec_iocs"] == 1
