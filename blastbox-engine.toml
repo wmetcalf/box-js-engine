@@ -1,0 +1,143 @@
+# Engine output contract for `boxjs` (schema blastbox-engine-contract/1).
+# Describes what src/boxjs_engine/engine.py emits TODAY.
+# Validate: python -m blastbox.contract.engine_contract validate blastbox-engine.toml
+schema = "blastbox-engine-contract/1"
+
+[engine]
+name = "boxjs"
+# No vbs: box-js has no VBScript interpreter (a .vbs input fails to parse and yields nothing).
+formats = ["js", "jse", "wsf", "wsh", "hta"]
+# Built to run offline (--fake-download). See gap egress-mode for Limits.net_egress.
+network = ["none"]
+# No input cap in the engine; the worker's Limits apply.
+# rejected (error and warning share the code):
+#   jscript_encoded - the input holds a JScript.Encode block, box-js exited 4
+#                     and logged nothing: it has no decoder, so the encoded body is a parse
+#                     error. Plain-text .jse runs.
+#   unparseable     - box-js exited 4 (Acorn could not parse the input, or box-js's own
+#                     rewrite of it; see gap containers-not-unpacked) and logged nothing. box-js still makes its
+#                     results dir, which would otherwise read as a clean, empty analysis.
+# Both are judged on what box-js produced: a run that logged IOCs is ok whatever its exit code.
+# An ok run of an input holding a JScript.Encode block carries warning
+# jscript_encoded_not_decoded: only the plain text around the block was analysed (after a
+# //**Start Encode** header box-js reads the block as a comment, so such a run is ok).
+statuses = ["ok", "rejected", "engine_error"]
+
+# Everything lives under `<sample name>.results/`, box-js's own output directory. The analysis
+# files are declared first (one refused for budget is warned `artifacts_truncated`); then every
+# other top-level file there, smallest first, as `snippet` (box-js's saved code) or `dropped`.
+# Count and bytes are bounded by the worker's Limits (max_artifacts, default 1000;
+# max_artifact_bytes, default 50 MiB, over which a file is warned `artifact_too_large` and not
+# declared; max_total_artifact_bytes), not by constants in the engine.
+
+[[artifacts]]
+id = "IOC.json"
+path = "*.results/IOC.json"
+kind = "analysis"
+role = "ioc_report"
+description = "box-js IOC list: [{type, value, description}], type is box-js's own IOC name (Run, FileWrite, UrlFetch, ...). Written on the first logged IOC (box-js always logs Sample Name), so absent only when box-js logged nothing or the file was over budget."
+
+[[artifacts]]
+id = "urls.json"
+path = "*.results/urls.json"
+kind = "analysis"
+role = "url_list"
+description = "Unique URLs the sample touched, a JSON list of strings. Absent when it touched none."
+
+[[artifacts]]
+id = "snippets.json"
+path = "*.results/snippets.json"
+kind = "analysis"
+role = "snippet_index"
+description = "Index of code snippets (eval'd JS, WScript commands): {snippet file name: {as: ...}}; the bodies are declared as `snippet`. Rewritten after each snippet, so a run killed mid-write can lack the newest entry."
+
+[[artifacts]]
+id = "resources.json"
+path = "*.results/resources.json"
+kind = "analysis"
+role = "resource_index"
+description = "Index of resources the sample wrote: {uuid file name declared as `dropped`: {path (emulated), type, latestUrl, md5, sha1, sha256}}, current after each write. NewResource IOCs in IOC.json carry the same records."
+
+[[artifacts]]
+id = "active_urls.json"
+path = "*.results/active_urls.json"
+kind = "analysis"
+role = "active_url_list"
+description = "JSON list of URLs box-js judged live: the URL it logged last (a fetch, but also a URL() constructor, an href or a navigation; reads of document.location are not logged) before the sample saved a file that `file` calls executable. A heuristic, not proof of a fetch. Written only then, so usually absent offline (--fake-download bodies are rarely executables)."
+
+[[artifacts]]
+id = "env_vars.json"
+path = "*.results/env_vars.json"
+kind = "analysis"
+role = "env_var_map"
+description = "Environment variables the sample set, {name: value}. Absent when it set none."
+
+[[artifacts]]
+id = "analysis.log"
+path = "*.results/analysis.log"
+kind = "analysis"
+role = "log"
+description = "box-js's analysis log."
+
+[[artifacts]]
+id = "*"
+path = "*.results/*"
+kind = "snippet"
+max_count = 0
+role = "code_snippet"
+description = "Code box-js saved, not a file the sample wrote: eval'd JS as <uuid>.js (lib.logJS; the first is the whole prepared sample) and each command passed to WScript.Shell Run as a bare <uuid> holding the command text verbatim (matched to its Run IOC), plus any name snippets.json keys. Uncapped here: the count is bounded by the worker's Limits.max_artifacts (default 1000), which a worker may raise."
+
+[[artifacts]]
+id = "*"
+path = "*.results/*"
+kind = "dropped"
+max_count = 0
+role = "recovered_file"
+description = "Every other top-level file in the results dir: files the sample wrote (bare <uuid> names, see the NewResource IOCs), downloaded (<sha256>_<name>) or decoded payloads. Uncapped here: the count is bounded by the worker's Limits.max_artifacts (default 1000), which a worker may raise."
+
+[payload]
+# ok: Record{schema_version, exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs,
+#     write_iocs, url_iocs, url_count}. engine_error: Record{schema_version, error, ...}
+#     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).
+#     box_js_failed: box-js exited nonzero (not 4) or died by a signal having logged and written nothing, e.g. 3
+#     when its own rewrite failed; adds exit_code + stderr_tail.
+#     rejected: Record{schema_version, error} (jscript_encoded; unparseable adds exit_code).
+#     A harness-sealed engine_error (the engine raised) is Record{error} without schema_version.
+root = "record"
+node_types = ["record"]
+schema_version = "boxjs.result/1"
+required_root_fields = ["schema_version", "exit_code", "killed", "net_egress", "results_dir", "ioc_count",
+                        "exec_iocs", "write_iocs", "url_iocs", "url_count"]
+
+# No [[detections]]: the payload carries counts only, and Loadout turns nothing from this
+# engine into a detection (engines.py maps boxjs to dets=[]). See gap no-finding-codes.
+
+[[gaps]]
+id = "no-finding-codes"
+description = "Findings exist only inside the IOC.json artifact as box-js IOC type names plus free-text descriptions; the payload has counts (exec/write/url IOC families) but no stable finding codes or severities."
+
+[[gaps]]
+id = "killed-is-ok"
+description = "A timed-out run whose results dir exists is status ok with partial results and warning timeout: box-js's own timeout (--timeout, 60% of Limits.timeout_s; recognised by the run lasting that long, since stdout is the sample's to write) leaves exit_code 0 and killed=false; the engine's wall clock (Limits.timeout_s + 10) sets killed=true and exit_code -9. A nonzero exit_code is ok too unless box-js logged and wrote nothing: exit 4 is then rejected unparseable, any other nonzero exit engine_error box_js_failed."
+
+[[gaps]]
+id = "egress-mode"
+description = "With Limits.net_egress set the engine passes --download and box-js fetches next stages for real; the payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
+
+[[gaps]]
+id = "containers-not-unpacked"
+description = "box-js parses raw JScript only: a WSF (<job>/<script>), an HTA (HTML with <script> blocks) or a .wsh (an INI settings file) is not unpacked, so Acorn fails, box-js exits 4 and the engine returns rejected/unparseable. The formats are listed because Loadout routes them here; extracting their script blocks before box-js runs is unbuilt (owner decision)."
+
+[[gaps]]
+id = "loadout-rejected-is-unavailable"
+description = "Loadout (feat/engine-contract) does not list boxjs in REJECTION_IS_VERDICT, so a rejected result (jscript_encoded, unparseable) reaches run_blastbox as EngineUnavailable ('engine could not run') rather than a verdict that this input is unsupported."
+
+[[gaps]]
+id = "results-dir-trusted"
+description = "box-js gives the sample's sandbox the host require (a known box-js residual), so a sample can write anything into its results dir. The engine reads only the run's own <sample>.results dir, declares only regular files (no symlinks, FIFOs or devices) under sanitized ids, and ignores JSON it cannot parse, but the contents of those files are the sample's to forge."
+
+[[consumers]]
+name = "loadout"
+engine = "boxjs"
+mapper = "backend/loadout/boxjs.py:map_outputs"
+emits = ["file", "script", "url"]
