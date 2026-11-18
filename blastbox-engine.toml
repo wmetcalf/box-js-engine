@@ -38,14 +38,14 @@ id = "snippets.json"
 path = "*.results/snippets.json"
 kind = "analysis"
 role = "snippet_index"
-description = "Index of code snippets (eval'd JS, WScript commands); the bodies are declared as `snippet`. Upstream box-js keys it by snippet file name; the pinned fork serializes it as a list of nulls (see gap fork-index-files-null)."
+description = "Index of code snippets (eval'd JS, WScript commands): {snippet file name: {as: ...}}; the bodies are declared as `snippet`. Rewritten after each snippet, so a run killed mid-write can lack the newest entry."
 
 [[artifacts]]
 id = "resources.json"
 path = "*.results/resources.json"
 kind = "analysis"
 role = "resource_index"
-description = "Index of resources the sample wrote (emulated path, type, hashes) keyed by the uuid file name declared as `dropped`. The pinned fork serializes it as a list of nulls; NewResource IOCs in IOC.json carry the same records."
+description = "Index of resources the sample wrote: {uuid file name declared as `dropped`: {path (emulated), type, latestUrl, md5, sha1, sha256}}, current after each write. NewResource IOCs in IOC.json carry the same records."
 
 [[artifacts]]
 id = "active_urls.json"
@@ -100,10 +100,6 @@ required_root_fields = ["schema_version", "exit_code", "killed", "net_egress", "
 [[gaps]]
 id = "no-finding-codes"
 description = "Findings exist only inside the IOC.json artifact as box-js IOC type names plus free-text descriptions; the payload has counts (exec/write/url IOC families) but no stable finding codes or severities."
-
-[[gaps]]
-id = "fork-index-files-null"
-description = "The pinned box-js fork's simpleStringify writes the name-keyed maps snippets.json and resources.json as lists of nulls, and resources.json is written before the newest resource is recorded, so it lags one entry behind. The engine recognises snippets without them (see the snippet artifact), but a consumer gets no per-resource index; the NewResource IOCs in IOC.json carry the same records. Fixed in the fork by https://github.com/wmetcalf/box-js/pull/1 (lib.js); this gap closes when the box-js submodule is bumped past that merge."
 
 [[gaps]]
 id = "killed-is-ok"

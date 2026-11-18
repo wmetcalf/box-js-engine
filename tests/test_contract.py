@@ -82,6 +82,16 @@ def test_a_real_detonation_conforms(tmp_path, monkeypatch):
     assert "snippet" in kinds
     dropped = [a for a in res.artifacts if a.kind == "dropped"]
     assert [(out / a.path).read_bytes() for a in dropped] == [b"dropped\r\n"]
+    # box-js writes its index files as name-keyed maps that agree with the declared kinds.
+    by_id = {a.id: a for a in res.artifacts}
+    results = out / by_id["IOC.json"].path.rsplit("/", 1)[0]
+    snippets = json.loads((results / "snippets.json").read_text())
+    resources = json.loads((results / "resources.json").read_text())
+    assert isinstance(snippets, dict) and snippets and isinstance(resources, dict)
+    assert all(by_id[name].kind == "snippet" for name in snippets)
+    assert [by_id[name].kind for name in resources] == ["dropped"]
+    assert [r["sha256"] for r in resources.values()] == [
+        hashlib.sha256(b"dropped\r\n").hexdigest()]
 
 
 @needs_boxjs

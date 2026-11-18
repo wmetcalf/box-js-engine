@@ -148,11 +148,11 @@ _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 def _snippet_names(results: Path) -> set[str]:
     """Names of the code snippets box-js wrote: box-js output, not files the sample wrote.
 
-    Upstream box-js keys snippets.json by snippet file name. Our fork's simpleStringify
-    turns that map into a list of nulls, so the snippets are also recognised by how box-js
-    writes them: lib.logJS saves eval'd JS as `<uuid4>.js` (logResource names the sample's
-    files with a bare uuid4), and runShellCommand saves each command, verbatim, as a bare
-    `<uuid4>` alongside a Run IOC carrying the same text.
+    box-js keys snippets.json by snippet file name. It writes each snippet's file before
+    rewriting the index, so a run killed in between leaves a snippet the index lacks; those
+    are also recognised by how box-js writes them: lib.logJS saves eval'd JS as `<uuid4>.js`
+    (logResource names the sample's files with a bare uuid4), and runShellCommand saves each
+    command, verbatim, as a bare `<uuid4>` alongside a Run IOC carrying the same text.
     """
     index = _load_json(results / "snippets.json", {})
     names = {str(k) for k in index} if isinstance(index, dict) else set()

@@ -86,10 +86,10 @@ def test_every_payload_carries_a_schema_version(tmp_path, monkeypatch):
 
 
 def test_snippets_and_env_vars_are_not_declared_as_dropped(tmp_path):
-    """The layout box-js (our fork) really writes: snippets.json serializes its name-keyed
-    map as a list of nulls, so snippets are told apart by what box-js names and writes."""
+    """A snippets.json without the snippets (a run killed between writing a snippet and
+    rewriting the index): snippets are still told apart by what box-js names and writes."""
     r = _results(tmp_path, [{"type": "Run", "value": {"command": "cmd /c echo hi"}}])
-    (r / "snippets.json").write_text("[null, null]")
+    (r / "snippets.json").write_text("{}")
     js = "566349bb-7d1c-4aa2-8915-f20332fcd07d.js"         # lib.logJS: eval'd JS
     cmd = "ab2dee1c-06b2-4f7e-901b-8273d423d049"           # runShellCommand: the command
     res = "8c1dd676-f228-4159-bb73-87cc827a2571"           # logResource: the sample's file
