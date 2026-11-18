@@ -52,8 +52,8 @@ end-to-end detonation has been run.**
 ## Engine contract
 
 [`blastbox-engine.toml`](blastbox-engine.toml) states what the `boxjs` engine emits today: the
-artifact families under `<sample>.results/` (the `analysis` JSON/log files and everything else
-as `dropped`), the `record` payload's required fields, no detection codes, the gaps a consumer
+artifact families under `<sample>.results/` (the `analysis` JSON/log files, box-js's saved code
+as `snippet`, and everything else as `dropped`), the versioned `record` payload's required fields, no detection codes, the gaps a consumer
 must know about, and Loadout's mapper (`backend/loadout/boxjs.py:map_outputs`).
 `tests/test_contract.py` checks real detonations (direct and through the harness's sealed
 `metadata.json`) against it.

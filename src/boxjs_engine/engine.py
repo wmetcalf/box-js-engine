@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,6 +41,15 @@ DEFAULT_RUN_JS = "/opt/box-js/run.js"
 #: without rebuilding the image. Never job-derived: an attacker-influenced flag list
 #: would let a sample choose its own analysis options.
 EXTRA_ARGV_ENV = "BOXJS_EXTRA_ARGV"
+
+#: Version of the payload Record shape, on every payload (ok and engine_error) under
+#: `schema_version`. Bump it when a field is added, removed or changes meaning.
+SCHEMA_VERSION = "boxjs.result/1"
+
+#: box-js's own analysis output, declared first and as kind `analysis`. env_vars.json is
+#: box-js's record of the environment variables the sample set, not a file it dropped.
+_ANALYSIS_FILES = ("IOC.json", "urls.json", "snippets.json", "resources.json",
+                   "active_urls.json", "env_vars.json", "analysis.log")
 
 #: box-js flags this engine always passes. --no-kill and --no-shell-error keep the
 #: emulator going after an unimplemented feature instead of aborting the analysis,
@@ -98,7 +108,7 @@ def _results_dir(outdir: Path) -> Path | None:
 def _load_json(path: Path, default):
     try:
         return json.loads(path.read_text(errors="replace"))
-    except Exception:
+    except (OSError, ValueError):   # unreadable, or not JSON (JSONDecodeError)
         return default
 
 
@@ -132,6 +142,38 @@ def _summarise(results: Path) -> dict:
     }
 
 
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _snippet_names(results: Path) -> set[str]:
+    """Names of the code snippets box-js wrote: box-js output, not files the sample wrote.
+
+    Upstream box-js keys snippets.json by snippet file name. Our fork's simpleStringify
+    turns that map into a list of nulls, so the snippets are also recognised by how box-js
+    writes them: lib.logJS saves eval'd JS as `<uuid4>.js` (logResource names the sample's
+    files with a bare uuid4), and runShellCommand saves each command, verbatim, as a bare
+    `<uuid4>` alongside a Run IOC carrying the same text.
+    """
+    index = _load_json(results / "snippets.json", {})
+    names = {str(k) for k in index} if isinstance(index, dict) else set()
+    iocs = _load_json(results / "IOC.json", [])
+    commands = {
+        e["value"]["command"] for e in (iocs if isinstance(iocs, list) else [])
+        if isinstance(e, dict) and str(e.get("type", "")).lower() == "run"
+        and isinstance(e.get("value"), dict) and isinstance(e["value"].get("command"), str)
+    }
+    longest = max((len(c.encode("utf-8", "replace")) for c in commands), default=-1)
+    for p in results.iterdir():
+        if not p.is_file():
+            continue
+        logged_js = p.suffix == ".js" and _UUID.fullmatch(p.stem)
+        run_command = (_UUID.fullmatch(p.name) and p.stat().st_size <= longest
+                       and p.read_bytes().decode("utf-8", "replace") in commands)
+        if logged_js or run_command:
+            names.add(p.name)
+    return names
+
+
 def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
                        warnings: list[Warning]) -> list[DeclaredArtifact]:
     """Declare the result files, newest-first, inside the worker's artifact budget.
@@ -142,8 +184,7 @@ def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
     """
     artifacts: list[DeclaredArtifact] = []
     total = 0
-    preferred = ["IOC.json", "urls.json", "snippets.json", "resources.json",
-                 "active_urls.json", "analysis.log"]
+    snippets = _snippet_names(results)
 
     def add(path: Path, kind: str) -> bool:
         nonlocal total
@@ -166,16 +207,20 @@ def _declare_artifacts(results: Path, outdir: Path, limits: Limits,
         ))
         return True
 
-    for name in preferred:
+    for name in _ANALYSIS_FILES:
         p = results / name
+        # A refused analysis file is never silent, and a smaller one after it may fit.
         if p.is_file() and not add(p, "analysis"):
-            break
+            warnings.append(Warning(
+                code="artifacts_truncated",
+                message=f"analysis file {name} omitted: artifact budget exhausted",
+            ))
 
     dropped = sorted((p for p in results.iterdir()
-                      if p.is_file() and p.name not in preferred),
+                      if p.is_file() and p.name not in _ANALYSIS_FILES),
                      key=lambda p: p.stat().st_size)
     for p in dropped:
-        if not add(p, "dropped"):
+        if not add(p, "snippet" if p.name in snippets else "dropped"):
             warnings.append(Warning(
                 code="artifacts_truncated",
                 message="dropped files omitted: artifact budget exhausted",
@@ -188,7 +233,9 @@ class BoxJsEngine:
     """Detonate a JScript/JS sample with box-js and seal its IOCs and dropped files."""
 
     name = "boxjs"
-    formats = frozenset({"js", "jse", "wsf", "wsh", "hta", "vbs"})
+    # No vbs: box-js has no VBScript interpreter (acorn rejects the source, and HTA
+    # <script language=vbscript> blocks are skipped), so a .vbs run is a silent no-op.
+    formats = frozenset({"js", "jse", "wsf", "wsh", "hta"})
 
     def detect(self, input: Path) -> Detection:
         # box-js is dispatched by the host on content gating; this is a nominal
@@ -201,7 +248,8 @@ class BoxJsEngine:
         run_js = _run_js()
         if not Path(run_js).is_file():
             return DetonationResult(
-                payload=Record(fields={"error": "box_js_missing", "path": run_js}),
+                payload=Record(fields={"schema_version": SCHEMA_VERSION,
+                                   "error": "box_js_missing", "path": run_js}),
                 artifacts=[],
                 detected=self.detect(input),
                 warnings=[Warning(code="box_js_missing",
@@ -210,7 +258,7 @@ class BoxJsEngine:
             )
         if shutil.which("node") is None:
             return DetonationResult(
-                payload=Record(fields={"error": "node_missing"}),
+                payload=Record(fields={"schema_version": SCHEMA_VERSION, "error": "node_missing"}),
                 artifacts=[],
                 detected=self.detect(input),
                 warnings=[Warning(code="node_missing", message="node not on PATH")],
@@ -247,7 +295,7 @@ class BoxJsEngine:
             # NEVER shell=True; argv is a fixed list. The worker is the sandbox.
             # Wall-clock guard sits above box-js's own budget so a wedged node
             # process cannot outlive the job.
-            proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            proc = subprocess.run(  # fixed argv, no shell
                 argv, capture_output=True, check=False,
                 timeout=limits.timeout_s + 10,
             )
@@ -267,6 +315,7 @@ class BoxJsEngine:
             # diagnosable instead of looking like a clean run that found nothing.
             return DetonationResult(
                 payload=Record(fields={
+                    "schema_version": SCHEMA_VERSION,
                     "error": "no_results_dir",
                     "exit_code": code,
                     "stderr_tail": stderr[-2000:].decode("utf-8", "replace"),
@@ -295,6 +344,7 @@ class BoxJsEngine:
 
         return DetonationResult(
             payload=Record(fields={
+                "schema_version": SCHEMA_VERSION,
                 "exit_code": code,
                 "killed": killed,
                 "net_egress": limits.net_egress,

@@ -75,8 +75,13 @@ def test_a_real_detonation_conforms(tmp_path, monkeypatch):
     ec.assert_conforms(CONTRACT, res, out)
     ids = {a.id for a in res.artifacts}
     assert {"IOC.json", "urls.json"} <= ids
-    assert any(a.kind == "dropped" for a in res.artifacts)
     assert res.payload.fields["exec_iocs"] >= 1 and res.payload.fields["url_count"] == 1
+    assert res.payload.fields["schema_version"] == CONTRACT.payload.schema_version
+    kinds = {a.kind for a in res.artifacts}
+    # The Run command box-js saved is a snippet; a.txt the sample wrote is the dropped file.
+    assert "snippet" in kinds
+    dropped = [a for a in res.artifacts if a.kind == "dropped"]
+    assert [(out / a.path).read_bytes() for a in dropped] == [b"dropped\r\n"]
 
 
 @needs_boxjs

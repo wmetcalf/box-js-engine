@@ -2,8 +2,6 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from boxjs_engine.engine import _declare_artifacts, _results_dir, _summarise
 
 
@@ -72,3 +70,65 @@ def test_oversize_artifact_is_warned_not_declared(tmp_path):
     arts = _declare_artifacts(r, tmp_path, _Limits(), warns)
     assert "huge.bin" not in {a.id for a in arts}
     assert any(w.code == "artifact_too_large" for w in warns)
+
+
+def test_every_payload_carries_a_schema_version(tmp_path, monkeypatch):
+    from blastbox.limits import Limits
+
+    from boxjs_engine.engine import RUN_JS_ENV, SCHEMA_VERSION, BoxJsEngine
+
+    assert SCHEMA_VERSION == "boxjs.result/1"
+    monkeypatch.setenv(RUN_JS_ENV, str(tmp_path / "absent" / "run.js"))
+    sample = tmp_path / "s.js"
+    sample.write_text("var a = 1;")
+    res = BoxJsEngine().detonate(sample, tmp_path, Limits())
+    assert res.payload.fields["schema_version"] == SCHEMA_VERSION
+
+
+def test_snippets_and_env_vars_are_not_declared_as_dropped(tmp_path):
+    """The layout box-js (our fork) really writes: snippets.json serializes its name-keyed
+    map as a list of nulls, so snippets are told apart by what box-js names and writes."""
+    r = _results(tmp_path, [{"type": "Run", "value": {"command": "cmd /c echo hi"}}])
+    (r / "snippets.json").write_text("[null, null]")
+    js = "566349bb-7d1c-4aa2-8915-f20332fcd07d.js"         # lib.logJS: eval'd JS
+    cmd = "ab2dee1c-06b2-4f7e-901b-8273d423d049"           # runShellCommand: the command
+    res = "8c1dd676-f228-4159-bb73-87cc827a2571"           # logResource: the sample's file
+    (r / js).write_text("eval('1')")
+    (r / cmd).write_text("cmd /c echo hi")
+    (r / res).write_text("dropped\r\n")
+    (r / "env_vars.json").write_text(json.dumps({"X": "y"}))
+    kinds = {a.id: a.kind for a in _declare_artifacts(r, tmp_path, _Limits(), [])}
+    assert kinds[js] == "snippet"
+    assert kinds[cmd] == "snippet"
+    assert kinds[res] == "dropped"
+    assert kinds["env_vars.json"] == "analysis"
+
+
+def test_a_name_keyed_snippets_index_is_honoured(tmp_path):
+    """Upstream box-js writes snippets.json as {file name: {as: ...}}."""
+    r = _results(tmp_path, [])
+    (r / "snippets.json").write_text(json.dumps({"abc": {"as": "WScript code"}}))
+    (r / "abc").write_text("whatever")
+    kinds = {a.id: a.kind for a in _declare_artifacts(r, tmp_path, _Limits(), [])}
+    assert kinds["abc"] == "snippet"
+
+
+def test_an_analysis_file_refused_for_budget_is_warned_and_smaller_ones_still_kept(tmp_path):
+    r = _results(tmp_path, [{"type": "Run", "value": {}}])
+    (r / "snippets.json").write_text("x" * 1000)     # within max_artifact_bytes, over the total
+    (r / "analysis.log").write_text("small")
+
+    class Tight(_Limits):
+        max_total_artifact_bytes = 600
+
+    warns = []
+    ids = {a.id for a in _declare_artifacts(r, tmp_path, Tight(), warns)}
+    assert "snippets.json" not in ids
+    assert "analysis.log" in ids
+    assert any(w.code == "artifacts_truncated" and "snippets.json" in w.message for w in warns)
+
+
+def test_vbs_is_not_claimed_box_js_has_no_vbscript_interpreter():
+    from boxjs_engine.engine import BoxJsEngine
+
+    assert "vbs" not in BoxJsEngine.formats

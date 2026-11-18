@@ -5,14 +5,16 @@ schema = "blastbox-engine-contract/1"
 
 [engine]
 name = "boxjs"
-formats = ["js", "jse", "wsf", "wsh", "hta", "vbs"]
+# No vbs: box-js has no VBScript interpreter (a .vbs input fails to parse and yields nothing).
+formats = ["js", "jse", "wsf", "wsh", "hta"]
 # Built to run offline (--fake-download). See gap egress-mode for Limits.net_egress.
 network = ["none"]
 # No input cap in the engine; the worker's Limits apply.
 statuses = ["ok", "engine_error"]
 
 # Everything lives under `<sample name>.results/`, box-js's own output directory. The analysis
-# files are declared first; then every other top-level file there, smallest first, as `dropped`.
+# files are declared first (one refused for budget is warned `artifacts_truncated`); then every
+# other top-level file there, smallest first, as `snippet` (box-js's saved code) or `dropped`.
 # Count and bytes are bounded by the worker's Limits (max_artifacts, default 1000;
 # max_artifact_bytes, default 50 MiB, over which a file is warned `artifact_too_large` and not
 # declared; max_total_artifact_bytes), not by constants in the engine.
@@ -36,21 +38,28 @@ id = "snippets.json"
 path = "*.results/snippets.json"
 kind = "analysis"
 role = "snippet_index"
-description = "Index of code snippets (eval'd JS, WScript/WMI commands) keyed by the snippet file name; the snippet bodies are declared as `dropped`."
+description = "Index of code snippets (eval'd JS, WScript commands); the bodies are declared as `snippet`. Upstream box-js keys it by snippet file name; the pinned fork serializes it as a list of nulls (see gap fork-index-files-null)."
 
 [[artifacts]]
 id = "resources.json"
 path = "*.results/resources.json"
 kind = "analysis"
 role = "resource_index"
-description = "Index of resources the sample wrote (emulated path, type, hashes) keyed by the uuid file name declared as `dropped`."
+description = "Index of resources the sample wrote (emulated path, type, hashes) keyed by the uuid file name declared as `dropped`. The pinned fork serializes it as a list of nulls; NewResource IOCs in IOC.json carry the same records."
 
 [[artifacts]]
 id = "active_urls.json"
 path = "*.results/active_urls.json"
 kind = "analysis"
 role = "active_url_list"
-description = "URLs box-js judged live (only written when downloads are attempted)."
+description = "JSON list of URLs box-js judged live: the URL fetched last before the sample saved a file that `file` calls executable. Written only then, so usually absent offline (--fake-download bodies are rarely executables)."
+
+[[artifacts]]
+id = "env_vars.json"
+path = "*.results/env_vars.json"
+kind = "analysis"
+role = "env_var_map"
+description = "Environment variables the sample set, {name: value}. Absent when it set none."
 
 [[artifacts]]
 id = "analysis.log"
@@ -62,34 +71,39 @@ description = "box-js's analysis log."
 [[artifacts]]
 id = "*"
 path = "*.results/*"
+kind = "snippet"
+max_count = 1000
+role = "code_snippet"
+description = "Code box-js saved, not a file the sample wrote: eval'd JS as <uuid>.js (lib.logJS; the first is the whole prepared sample) and each command passed to WScript.Shell Run as a bare <uuid> holding the command text verbatim (matched to its Run IOC), plus any name snippets.json keys. max_count is Limits.max_artifacts' default."
+
+[[artifacts]]
+id = "*"
+path = "*.results/*"
 kind = "dropped"
 max_count = 1000
-role = "dropped_or_snippet"
-description = "Every other top-level file in the results dir: files the sample wrote (uuid names), code snippets (<uuid>.js), env_vars.json. max_count is Limits.max_artifacts' default."
+role = "recovered_file"
+description = "Every other top-level file in the results dir: files the sample wrote (bare <uuid> names, see the NewResource IOCs), downloaded (<sha256>_<name>) or decoded payloads. max_count is Limits.max_artifacts' default."
 
 [payload]
-# ok: Record{exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs, write_iocs,
-#     url_iocs, url_count}. engine_error: Record{error, ...} (box_js_missing, node_missing,
-#     no_results_dir with exit_code + stderr_tail).
+# ok: Record{schema_version, exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs,
+#     write_iocs, url_iocs, url_count}. engine_error: Record{schema_version, error, ...}
+#     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).
 root = "record"
 node_types = ["record"]
-required_root_fields = ["exit_code", "killed", "net_egress", "results_dir", "ioc_count",
+schema_version = "boxjs.result/1"
+required_root_fields = ["schema_version", "exit_code", "killed", "net_egress", "results_dir", "ioc_count",
                         "exec_iocs", "write_iocs", "url_iocs", "url_count"]
 
 # No [[detections]]: the payload carries counts only, and Loadout turns nothing from this
 # engine into a detection (engines.py maps boxjs to dets=[]). See gap no-finding-codes.
 
 [[gaps]]
-id = "no-schema-version"
-description = "The ok payload Record has no schema/version field; a consumer cannot tell payload shapes apart across engine versions."
-
-[[gaps]]
 id = "no-finding-codes"
 description = "Findings exist only inside the IOC.json artifact as box-js IOC type names plus free-text descriptions; the payload has counts (exec/write/url IOC families) but no stable finding codes or severities."
 
 [[gaps]]
-id = "dropped-kind-ambiguous"
-description = "kind=dropped covers files the sample wrote, box-js's own code snippets (<uuid>.js) and env_vars.json alike; only snippets.json / resources.json, by file name, tell them apart."
+id = "fork-index-files-null"
+description = "The pinned box-js fork's simpleStringify writes the name-keyed maps snippets.json and resources.json as lists of nulls. The engine recognises snippets without them (see the snippet artifact), but a consumer gets no per-resource index; the NewResource IOCs in IOC.json carry the same records. Fix belongs in the box-js fork (lib.js), not this engine."
 
 [[gaps]]
 id = "killed-is-ok"
@@ -98,10 +112,6 @@ description = "A run killed at the wall clock (Limits.timeout_s + 10) whose resu
 [[gaps]]
 id = "egress-mode"
 description = "With Limits.net_egress set the engine passes --download and box-js fetches next stages for real; the payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
-
-[[gaps]]
-id = "silent-analysis-omission"
-description = "An analysis file that would exceed max_total_artifact_bytes (or max_artifacts) stops declaration without a warning; artifacts_truncated is emitted only when a dropped file is then also refused."
 
 [[gaps]]
 id = "loadout-caps-refuse-whole-result"
@@ -121,15 +131,11 @@ description = "Loadout reads no payload field (exit_code, killed, net_egress, co
 
 [[gaps]]
 id = "loadout-ignores-active-urls"
-description = "Loadout parses URLs only from urls.json (http/https with a host); active_urls.json and UrlFetch/XMLHTTP IOC values are retained as report files but not normalized."
+description = "Loadout parses URLs only from urls.json (http/https with a host); active_urls.json and UrlFetch/XMLHTTP IOC values (value.url) are retained as report files but not normalized. The engine declares active_urls.json whenever box-js writes it (see that artifact for when)."
 
 [[gaps]]
-id = "loadout-snippets-as-recovered-files"
-description = "Loadout maps every kind=dropped artifact to analysis_role recovered_file, so box-js's code snippets and env_vars.json are presented as files the sample dropped."
-
-[[gaps]]
-id = "loadout-skips-vbs"
-description = "The engine declares vbs, but Loadout's BOXJS_EXTENSIONS (cape_pipeline.py) route only js/jse/wsf/wsh/hta to it."
+id = "loadout-snippets-unlabelled"
+description = "The engine declares box-js's code as kind=snippet and env_vars.json as kind=analysis, so Loadout's map_outputs no longer calls them recovered_file, but it maps every non-dropped kind to analysis_role report; a snippet is not labelled as code the sample executed or ran."
 
 [[gaps]]
 id = "loadout-emits-text-message-unproduced"
