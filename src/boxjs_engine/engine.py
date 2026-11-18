@@ -97,18 +97,20 @@ def _extra_argv() -> list[str]:
     return [str(x) for x in got] if isinstance(got, list) else []
 
 
-def _results_dir(outdir: Path, sample: Path) -> Path | None:
-    """box-js writes `<outdir>/<sample name>.results/`, and appends `.1`, `.2` … if
-    that already exists. Only that name is the run's: the sample can write anywhere in
-    outdir, so another *.results dir (a decoy with a newer mtime) is never taken."""
-    # box-js's _run.js: <name>.results, then <name>.<i>.results if that exists.
+def _results_dir(outdir: Path, sample: Path, before: set[str] | frozenset[str] = frozenset()
+                 ) -> Path | None:
+    """box-js writes `<outdir>/<sample name>.results/`, or `<name>.<i>.results` for the first
+    free i (_run.js). Only those names are the run's, and of the ones that were not there
+    before the run (`before`), the lowest index is the one box-js took: the sample can write
+    anywhere in outdir, so another *.results dir, or a higher index it planted later, is never
+    taken."""
     pattern = re.compile(re.escape(sample.name) + r"(?:\.([0-9]{1,6}))?\.results")
     found = []
     for p in outdir.iterdir():
         m = pattern.fullmatch(p.name)
-        if m and _is_dir(p):
+        if m and p.name not in before and _is_dir(p):
             found.append((int(m.group(1) or 0), p))
-    return max(found)[1] if found else None
+    return min(found)[1] if found else None
 
 
 def _is_dir(p: Path) -> bool:
@@ -172,13 +174,24 @@ def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
 # A JScript.Encode block: "#@~^", a 6-char base64 length, "==", the body, a 6-char checksum,
 # "==^#~@". screnc keeps the text before //**Start Encode** plain, so the block need not
 # start the file. A match only matters if box-js then logs nothing (see detonate).
-_JSE_BLOCK = re.compile(rb"#@~\^[A-Za-z0-9+/]{6}==.*?[A-Za-z0-9+/]{6}==\^#~@", re.DOTALL)
+_JSE_START = re.compile(rb"#@~\^[A-Za-z0-9+/]{6}==")
+_JSE_END = b"==^#~@"
+_JSE_CHECKSUM = re.compile(rb"[A-Za-z0-9+/]{6}")
 
 
 def _is_jscript_encoded(path: Path) -> bool:
+    """One linear pass: each opener is followed to its own terminator with bytes.find."""
     with path.open("rb") as f:
         head = f.read(1 << 20)
-    return _JSE_BLOCK.search(head) is not None
+    end = head.find(_JSE_END)
+    for m in _JSE_START.finditer(head):
+        if end != -1 and end < m.end():
+            end = head.find(_JSE_END, m.end())
+        if end == -1:
+            return False
+        if _JSE_CHECKSUM.fullmatch(head, end - 6, end):
+            return True
+    return False
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -348,6 +361,7 @@ class BoxJsEngine:
         ]
 
         killed = False
+        before = {p.name for p in outdir.iterdir()}
         # stdout/stderr go to files, not pipes: when box-js's own timeout fires, _run.js
         # SIGTERMs analyze.js, whose sync-rpc worker (stdio inherited) is orphaned and would
         # hold a pipe open until the wall clock. box-js runs in its own session so the whole
@@ -376,8 +390,17 @@ class BoxJsEngine:
             err_f.seek(0, os.SEEK_END)
             err_f.seek(max(0, err_f.tell() - 2000))
             stderr = err_f.read()
+            # _run.js prints this and exits 0 when box-js's own --timeout ends the analysis.
+            out_f.seek(0, os.SEEK_END)
+            out_f.seek(max(0, out_f.tell() - 4096))
+            own_timeout = b" timed out." in out_f.read()
+        if own_timeout and not killed:
+            warnings.append(Warning(
+                code="timeout",
+                message=f"box-js's own {vm_timeout}s timeout ended the analysis; results are partial",
+            ))
 
-        results = _results_dir(outdir, input)
+        results = _results_dir(outdir, input, before)
         # Judged on what box-js produced, not on the exit code or a marker alone: a sample can
         # exit 4 itself (host require), and a plain script can quote a JSE marker.
         summary = (_summarise(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes))
@@ -426,11 +449,18 @@ class BoxJsEngine:
                 artifacts=[],
                 detected=self.detect(input),
                 warnings=[Warning(code="unparseable",
-                                  message="box-js could not parse the input as JScript")],
+                                  message="box-js could not parse the input (or its own "
+                                          "rewrite of it) as JScript")],
                 status="rejected",
             )
 
         assert summary is not None
+        if encoded:
+            warnings.append(Warning(
+                code="jscript_encoded_not_decoded",
+                message="the input holds a JScript.Encode block box-js cannot decode; "
+                        "results cover only its plain text",
+            ))
         artifacts = _declare_artifacts(results, outdir, limits, warnings)
 
         if summary["ioc_count"] <= 1:

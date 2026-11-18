@@ -20,7 +20,11 @@ def test_results_dir_is_the_samples_own(tmp_path):
     (tmp_path / "sample.js.10.results").mkdir()
     (tmp_path / "zzz.results").mkdir()
     (tmp_path / "not-results").mkdir()
-    assert _results_dir(tmp_path, Path("sample.js")).name == "sample.js.10.results"
+    # In a fresh outdir box-js takes the first free name; a run with nothing before it
+    # picks <name>.results even if higher indexes appear later (planted by the sample).
+    assert _results_dir(tmp_path, Path("sample.js")).name == "sample.js.results"
+    assert _results_dir(tmp_path, Path("sample.js"),
+                        before={"sample.js.results"}).name == "sample.js.2.results"
 
 
 def test_results_dir_none_when_absent(tmp_path):
@@ -300,3 +304,42 @@ def test_a_large_ioc_json_within_the_artifact_budget_is_counted(tmp_path):
 
     r = _results(tmp_path, [{"type": "Sample Name"}, {"type": "Run", "value": {"command": "x" * (70 << 20)}}])
     assert _summarise(r, max_json_bytes=128 << 20)["exec_iocs"] == 1
+
+
+def test_the_jse_check_is_linear(tmp_path):
+    import time
+
+    from boxjs_engine.engine import _is_jscript_encoded
+
+    p = tmp_path / "s.js"
+    p.write_bytes(b"/*" + b"#@~^AAAAAA==" * (1 << 16) + b"*/ var a = 1;")
+    t0 = time.monotonic()
+    assert _is_jscript_encoded(p) is False
+    assert time.monotonic() - t0 < 2
+
+
+def test_an_encoded_block_behind_a_plain_prologue_is_flagged(tmp_path, monkeypatch):
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
+            " {type: 'ActiveX Object Created', value: 'Scripting.FileSystemObject'}]));\n")
+    data = (b'var fso = new ActiveXObject("Scripting.FileSystemObject");\r\n'
+            b"//**Start Encode**#@~^IgAAAA==@#@&/mDkwOR?4.+^VIAAAAA==^#~@\r\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body, data, name="s.jse")
+    assert res.status == "ok"
+    assert "jscript_encoded_not_decoded" in [w.code for w in res.warnings]
+
+
+def test_box_js_own_timeout_is_reported(tmp_path, monkeypatch):
+    body = "console.log('Analysis for s.js timed out.'); process.exit(0);\n"
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert res.payload.fields["killed"] is False
+    assert "timeout" in [w.code for w in res.warnings]
+
+
+def test_a_planted_higher_index_results_dir_is_not_taken(tmp_path, monkeypatch):
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
+            " {type: 'Run', value: {command: 'cmd /c whoami'}}]));\n"
+            "const decoy = path.join(out, 's.js.5.results');\nfs.mkdirSync(decoy);\n"
+            "fs.writeFileSync(path.join(decoy, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert res.payload.fields["results_dir"] == "s.js.results"
+    assert res.payload.fields["exec_iocs"] == 1

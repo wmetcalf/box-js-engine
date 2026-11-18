@@ -14,10 +14,12 @@ network = ["none"]
 #   jscript_encoded - the input holds a JScript.Encode block (first 1 MiB) and box-js logged
 #                     nothing: it has no decoder, so the encoded body is a parse error or,
 #                     after a //**Start Encode** header, one long comment. Plain-text .jse runs.
-#   unparseable     - box-js exited 4 (Acorn could not parse the input; see gap
-#                     containers-not-unpacked) and logged nothing. box-js still makes its
+#   unparseable     - box-js exited 4 (Acorn could not parse the input, or box-js's own
+#                     rewrite of it; see gap containers-not-unpacked) and logged nothing. box-js still makes its
 #                     results dir, which would otherwise read as a clean, empty analysis.
 # Both are judged on what box-js produced: a run that logged IOCs is ok whatever its exit code.
+# An ok run of an input holding a JScript.Encode block carries warning
+# jscript_encoded_not_decoded: only the plain text around the block was analysed.
 statuses = ["ok", "rejected", "engine_error"]
 
 # Everything lives under `<sample name>.results/`, box-js's own output directory. The analysis
@@ -113,7 +115,7 @@ description = "Findings exist only inside the IOC.json artifact as box-js IOC ty
 
 [[gaps]]
 id = "killed-is-ok"
-description = "box-js's own timeout (--timeout, 60% of Limits.timeout_s) ends the run with box-js's exit code and killed=false; only the engine's wall clock (Limits.timeout_s + 10) sets killed=true, exit_code -9 and warning timeout. Either way a run whose results dir exists is status ok and its results are partial; a nonzero exit_code other than 4 (rejected unparseable) is ok too."
+description = "A timed-out run whose results dir exists is status ok with partial results and warning timeout: box-js's own timeout (--timeout, 60% of Limits.timeout_s) leaves exit_code 0 and killed=false; the engine's wall clock (Limits.timeout_s + 10) sets killed=true and exit_code -9. A nonzero exit_code is ok too unless box-js exited 4 having logged nothing (rejected unparseable)."
 
 [[gaps]]
 id = "egress-mode"
