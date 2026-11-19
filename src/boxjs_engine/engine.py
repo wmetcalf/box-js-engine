@@ -16,7 +16,9 @@ sample without re-reading the artifacts.
 Egress is taken from the worker, not guessed. `Limits.net_egress` decides between
 `--download` (really fetch the next stage) and `--fake-download` (return a synthetic
 200). An engine that fetched live payloads while the worker believed it was offline
-would be lying to the operator about what just happened on their network.
+would be lying to the operator about what just happened on their network. `--download`
+covers the WScript/browser fetch paths only: box-js emulates node's http/https/dns/net
+as a network-less worker sees them (logged, then failing) in either mode.
 """
 from __future__ import annotations
 
@@ -73,14 +75,32 @@ _BASE_ARGV = [
 ]
 
 #: IOC types box-js emits that mean "the sample launched something". Kept in step with
-#: the logIOC call sites in analyze.js/lib.js/emulator/ — a missing entry silently
-#: drops execution evidence from the summary.
+#: the logIOC call sites in analyze.js/lib.js/emulator/ and boilerplate.js's node stubs
+#: (child_process logs `process ...`) — a missing entry silently drops execution evidence
+#: from the summary.
 _EXEC_IOCS = frozenset({
     "run", "commandexec", "wmi.getobject.run", "wmi.getobject.create",
     "createshortcut", "task", "task path", "task arguments",
+    "process execsync()/exec()", "process spawn()", "process fork()",
 })
 _WRITE_IOCS = frozenset({"filewrite", "newresource", "adodbstream"})
-_URL_IOCS = frozenset({"urlfetch", "xmlhttp", "fetch"})
+#: Network requests: URL fetches, plus the node stubs' http/net calls and DNS queries
+#: (a DNS lookup names the C2 host as surely as a fetch of its URL does).
+_URL_IOCS = frozenset({"urlfetch", "xmlhttp", "fetch", "http.get()", "http.request()",
+                       "net.createconnection()"})
+#: boilerplate.js logs https and dns calls as "https.<method>()" / "dns.<function>()".
+_URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
+
+
+def _ioc_family(t: str) -> str | None:
+    """The summary family of a lower-cased box-js IOC type, or None."""
+    if t in _EXEC_IOCS:
+        return "exec"
+    if t in _WRITE_IOCS:
+        return "write"
+    if t in _URL_IOCS or _URL_IOC_FORM.fullmatch(t):
+        return "url"
+    return None
 
 
 def _run_js() -> str:
@@ -173,12 +193,12 @@ def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
     for entry in iocs:
         if not isinstance(entry, dict):
             continue
-        t = str(entry.get("type", "")).lower()
-        if t in _EXEC_IOCS:
+        family = _ioc_family(str(entry.get("type", "")).lower())
+        if family == "exec":
             n_exec += 1
-        elif t in _WRITE_IOCS:
+        elif family == "write":
             n_write += 1
-        elif t in _URL_IOCS:
+        elif family == "url":
             n_url += 1
 
     return {
@@ -445,8 +465,8 @@ class BoxJsEngine:
             ))
 
         results = _results_dir(outdir, input, before)
-        # Judged on what box-js produced, not on the exit code or a marker alone: a sample can
-        # exit 4 itself (host require), and a plain script can quote a JSE marker.
+        # Judged on what box-js produced, not on the exit code or a marker alone: evidence
+        # logged before a nonzero exit is kept, and a plain script can quote a JSE marker.
         summary = (_summarise(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes))
                    if results is not None else None)
         # Nothing logged and nothing written but box-js's own log/index files.

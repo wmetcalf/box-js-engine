@@ -48,6 +48,33 @@ def test_summarise_classifies_ioc_families(tmp_path):
     assert s["url_count"] == 1
 
 
+def test_summarise_counts_the_node_module_stub_iocs(tmp_path):
+    """box-js's node stubs log their own IOC names (boilerplate.js): child_process as
+    `process ...`, http/https/dns/net by module and method. Each is execution or network
+    evidence, not just another entry in ioc_count."""
+    r = _results(tmp_path, [
+        {"type": "Sample Name", "value": {}},
+        {"type": "process execSync()/exec()", "value": {"command": "whoami"}},
+        {"type": "process spawn()", "value": {"file": "cmd.exe"}},
+        {"type": "process fork()", "value": {"file": "x.js"}},
+        {"type": "http.get()", "value": {"url": "http://a.invalid/"}},
+        {"type": "http.request()", "value": {"url": "http://a.invalid/"}},
+        {"type": "https.get()", "value": {"url": "https://b.invalid/"}},
+        {"type": "https.request()", "value": {"url": "https://b.invalid/"}},
+        {"type": "dns.lookup()", "value": {"hostname": "c.invalid"}},
+        {"type": "dns.resolveTxt()", "value": {"hostname": "c.invalid"}},
+        {"type": "net.createConnection()", "value": {"host": "d.invalid"}},
+        # Not a module call: a lookalike name must not be counted by prefix alone.
+        {"type": "https.", "value": {}},
+        {"type": "dnsx.lookup()", "value": {}},
+    ])
+    s = _summarise(r)
+    assert s["ioc_count"] == 13
+    assert s["exec_iocs"] == 3
+    assert s["url_iocs"] == 7
+    assert s["write_iocs"] == 0
+
+
 def test_summarise_survives_malformed_json(tmp_path):
     r = tmp_path / "x.js.results"
     r.mkdir()
@@ -318,7 +345,8 @@ def test_every_non_ok_payload_carries_a_schema_version(tmp_path, monkeypatch):
 
 
 def test_exit_4_after_real_behaviour_is_not_a_rejection(tmp_path, monkeypatch):
-    """A sample can exit 4 itself (host require); evidence already logged must be kept."""
+    """Evidence logged before an exit 4 is kept: the status is judged on what box-js produced,
+    not on the exit code alone."""
     body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
             " {type: 'Run', value: {command: 'cmd /c whoami'}}]));\nprocess.exit(4);\n")
     res, _ = _detonate(tmp_path, monkeypatch, body)

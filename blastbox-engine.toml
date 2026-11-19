@@ -97,7 +97,10 @@ description = "Every other top-level file in the results dir: files the sample w
 
 [payload]
 # ok: Record{schema_version, exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs,
-#     write_iocs, url_iocs, url_count}. engine_error: Record{schema_version, error, ...}
+#     write_iocs, url_iocs, url_count}. exec_iocs counts launches (Run, CommandExec, WMI, Task,
+#     CreateShortcut, node child_process `process ...`); write_iocs FileWrite/NewResource/
+#     ADODBStream; url_iocs network requests (UrlFetch, XMLHTTP, fetch, node http.*/https.*/
+#     net.createConnection, and dns.* queries). engine_error: Record{schema_version, error, ...}
 #     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).
 #     box_js_failed: box-js exited nonzero (not 4) or died by a signal having logged and written nothing, e.g. 3
 #     when its own rewrite failed; adds exit_code + stderr_tail.
@@ -122,7 +125,7 @@ description = "A timed-out run whose results dir exists is status ok with partia
 
 [[gaps]]
 id = "egress-mode"
-description = "With Limits.net_egress set the engine passes --download and box-js fetches next stages for real; the payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
+description = "With Limits.net_egress set the engine passes --download and box-js fetches next stages for real through its WScript/browser fetch paths (XMLHTTP, fetch, ...); node's http/https/dns/net stay emulated as a network-less worker sees them (logged, then failing) in either mode. The payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
 
 [[gaps]]
 id = "containers-not-unpacked"
@@ -134,7 +137,7 @@ description = "Loadout (feat/engine-contract) does not list boxjs in REJECTION_I
 
 [[gaps]]
 id = "results-dir-trusted"
-description = "box-js gives the sample's sandbox the host require (a known box-js residual), so a sample can write anything into its results dir. The engine reads only the run's own <sample>.results dir, declares only regular files (no symlinks, FIFOs or devices) under sanitized ids, and ignores JSON it cannot parse, but the contents of those files are the sample's to forge."
+description = "The sample no longer reaches node's host require, fs or box-js's lib itself (box-js #2): in-sandbox require is a fixed table of emulated modules, and lib is a frozen facade. That facade still lets the sample call logIOC/logUrl/logResource/writeFile, so it can add any IOC.json/urls.json entry it likes (inflating ioc_count and the exec/write/url counts) and chooses the contents of the files it drops. box-js refuses index-file names and its own <sha256>.bin / <sha256>_<name> names for those files. The engine reads only the run's own <sample>.results dir, declares only regular files (no symlinks, FIFOs or devices) under sanitized ids, and ignores JSON it cannot parse; the counts are a triage signal, not proof."
 
 [[consumers]]
 name = "loadout"
