@@ -149,6 +149,7 @@ dns.lookup("node-c2.invalid", () => {});
 let ticks = 0;
 const t = timers.setInterval(() => {
   ticks += 1;
+  cp.execSync("tick " + ticks);
   if (ticks === 3) {
     timers.clearInterval(t);
     new ActiveXObject("WScript.Shell").Run("cmd /c echo third-tick", 0);
@@ -176,9 +177,13 @@ def test_a_real_node_dropper_is_counted_and_its_interval_ends(tmp_path, monkeypa
     assert "timeout" not in {w.code for w in res.warnings}
     assert elapsed < 30, elapsed
     f = res.payload.fields
-    # execSync, plus the Run on the third tick (the interval repeated).
-    assert f["exec_iocs"] == 2, f
+    # execSync, one execSync per tick, and the Run on the third tick: the interval repeated,
+    # and stopped at the clear (an uncleared one would tick on, up to box-js's cap).
+    assert f["exec_iocs"] == 2 + 3, f
     assert f["url_iocs"] >= 3, f          # https.get, http.get, dns.lookup
     iocs = json.loads((out / f["results_dir"] / "IOC.json").read_text())
     assert any(i.get("type") == "Run" and "third-tick" in json.dumps(i.get("value"))
                for i in iocs)
+    ticks = [i["value"]["command"] for i in iocs if i.get("type") == "process execSync()/exec()"
+             and str(i["value"].get("command", "")).startswith("tick ")]
+    assert ticks == ["tick 1", "tick 2", "tick 3"]

@@ -17,8 +17,9 @@ Egress is taken from the worker, not guessed. `Limits.net_egress` decides betwee
 `--download` (really fetch the next stage) and `--fake-download` (return a synthetic
 200). An engine that fetched live payloads while the worker believed it was offline
 would be lying to the operator about what just happened on their network. `--download`
-covers the WScript/browser fetch paths only: box-js emulates node's http/https/dns/net
-as a network-less worker sees them (logged, then failing) in either mode.
+reaches the network only through box-js's real fetch paths (the XMLHTTP/WinHttpRequest
+ActiveX objects and the browser fetch()); node's http/https/dns/net are stubs in either
+mode, and not all of them fail as offline node would (see the contract's egress-mode gap).
 """
 from __future__ import annotations
 
@@ -50,7 +51,9 @@ EXTRA_ARGV_ENV = "BOXJS_EXTRA_ARGV"
 
 #: Version of the payload Record shape, on every payload (ok and engine_error) under
 #: `schema_version`. Bump it when a field is added, removed or changes meaning.
-SCHEMA_VERSION = "boxjs.result/1"
+#: /2: exec_iocs and url_iocs count more IOC types (node child_process/http/https/axios/
+#: socket.io/net, JXA, remote MSI, jQuery/beacon), and url_iocs counts DNS queries too.
+SCHEMA_VERSION = "boxjs.result/2"
 
 #: box-js's own analysis output, declared first and as kind `analysis`. env_vars.json is
 #: box-js's record of the environment variables the sample set, not a file it dropped.
@@ -75,19 +78,29 @@ _BASE_ARGV = [
 ]
 
 #: IOC types box-js emits that mean "the sample launched something". Kept in step with
-#: the logIOC call sites in analyze.js/lib.js/emulator/ and boilerplate.js's node stubs
-#: (child_process logs `process ...`) — a missing entry silently drops execution evidence
-#: from the summary.
+#: the logIOC call sites in analyze.js/lib.js/emulator/ and boilerplate.js (child_process
+#: logs `process ...`; the JXA launches match box-js's own tools/harrington-enrich.js; a
+#: WindowsInstaller IOC is a remote MSI install or open) — a missing entry silently drops
+#: execution evidence from the summary.
 _EXEC_IOCS = frozenset({
     "run", "commandexec", "wmi.getobject.run", "wmi.getobject.create",
     "createshortcut", "task", "task path", "task arguments",
     "process execsync()/exec()", "process spawn()", "process fork()",
+    "windowsinstaller", "$.nstask.alloc.init.launchandreturnerror()",
+    "$.nsworkspace.sharedworkspace.openapplicationaturlconfigurationcompletionhandler()",
 })
 _WRITE_IOCS = frozenset({"filewrite", "newresource", "adodbstream"})
-#: Network requests: URL fetches, plus the node stubs' http/net calls and DNS queries
-#: (a DNS lookup names the C2 host as surely as a fetch of its URL does).
-_URL_IOCS = frozenset({"urlfetch", "xmlhttp", "fetch", "http.get()", "http.request()",
-                       "net.createconnection()"})
+#: Network requests: URL fetches (ActiveX, browser, jQuery, beacon, JXA), the node stubs'
+#: http/axios/socket.io/net calls, and DNS queries (a DNS lookup names the C2 host as
+#: surely as a fetch of its URL does). Not the browser `XMLHttpRequest` type: box-js logs
+#: it for setRequestHeader as well as for open, so it does not count requests.
+_URL_IOCS = frozenset({
+    "urlfetch", "xmlhttp", "fetch", "ajax", "jquery.get()", "jquery.getjson()",
+    "navigator.sendbeacon()", "$.nsdata.datawithcontentsofurl()",
+    "$.nsurlsession.sessionwithconfiguration().datataskwithurlcompletionhandler()",
+    "http.get()", "http.request()", "axios.get()", "axios.post()", "socket.io-client()",
+    "net.createconnection()",
+})
 #: boilerplate.js logs https and dns calls as "https.<method>()" / "dns.<function>()".
 _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 

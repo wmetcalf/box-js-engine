@@ -64,15 +64,39 @@ def test_summarise_counts_the_node_module_stub_iocs(tmp_path):
         {"type": "dns.lookup()", "value": {"hostname": "c.invalid"}},
         {"type": "dns.resolveTxt()", "value": {"hostname": "c.invalid"}},
         {"type": "net.createConnection()", "value": {"host": "d.invalid"}},
+        {"type": "axios.get()", "value": {"url": "http://e.invalid/"}},
+        {"type": "axios.post()", "value": {"url": "http://e.invalid/"}},
+        {"type": "socket.io-client()", "value": {"url": "http://e.invalid/"}},
         # Not a module call: a lookalike name must not be counted by prefix alone.
         {"type": "https.", "value": {}},
         {"type": "dnsx.lookup()", "value": {}},
     ])
     s = _summarise(r)
-    assert s["ioc_count"] == 13
+    assert s["ioc_count"] == 16
     assert s["exec_iocs"] == 3
-    assert s["url_iocs"] == 7
+    assert s["url_iocs"] == 10
     assert s["write_iocs"] == 0
+
+
+def test_summarise_counts_the_other_launch_and_fetch_iocs(tmp_path):
+    """Launches and fetches box-js logs outside the node stubs: a remote MSI install, the JXA
+    app launch and task (box-js's own tools/harrington-enrich.js counts both as launches),
+    the JXA and jQuery/beacon fetches."""
+    r = _results(tmp_path, [
+        {"type": "WindowsInstaller", "value": {"url": "http://a.invalid/p.msi"}},
+        {"type": "$.NSWorkSpace.sharedWorkspace.openApplicationAtURLConfigurationCompletionHandler()",
+         "value": {"url": "file:///x.app"}},
+        {"type": "$.NSTask.alloc.init.launchAndReturnError()", "value": "x"},
+        {"type": "$.NSData.dataWithContentsOfURL()", "value": {"url": "http://b.invalid/"}},
+        {"type": "$.NSURLSession.sessionWithConfiguration().dataTaskWithURLCompletionHandler()",
+         "value": {"url": "http://b.invalid/"}},
+        {"type": "AJAX", "value": {"url": "http://c.invalid/"}},
+        {"type": "JQuery.get()", "value": {"url": "http://c.invalid/"}},
+        {"type": "JQuery.getJSON()", "value": {"url": "http://c.invalid/"}},
+        {"type": "navigator.sendBeacon()", "value": {"url": "http://c.invalid/"}},
+    ])
+    s = _summarise(r)
+    assert (s["exec_iocs"], s["url_iocs"], s["write_iocs"]) == (3, 6, 0)
 
 
 def test_summarise_survives_malformed_json(tmp_path):
@@ -112,7 +136,7 @@ def test_every_payload_carries_a_schema_version(tmp_path, monkeypatch):
 
     from boxjs_engine.engine import RUN_JS_ENV, SCHEMA_VERSION, BoxJsEngine
 
-    assert SCHEMA_VERSION == "boxjs.result/1"
+    assert SCHEMA_VERSION == "boxjs.result/2"
     monkeypatch.setenv(RUN_JS_ENV, str(tmp_path / "absent" / "run.js"))
     sample = tmp_path / "s.js"
     sample.write_text("var a = 1;")
