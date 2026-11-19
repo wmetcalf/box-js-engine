@@ -105,8 +105,10 @@ description = "Every other top-level file in the results dir: files the sample w
 #     cannot be told apart reliably), the JXA app launch, node child_process `process ...`, and PayloadExec:
 #     a downloaded stage ran); write_iocs FileWrite/NewResource/ADODBStream; url_iocs
 #     network-request entries (UrlFetch, XMLHTTP, fetch, XMLHttpRequest open, WMI GetObject
-#     moniker, IE Navigate, Remote Script and Image.src (set to a URL, path-relative included, not
-#     inline HTML), AJAX/jQuery/sendBeacon/
+#     moniker, IE Navigate, Window Location and window.open() navigations, Remote Script
+#     and Image.src set to an absolute URL, or to a path-relative one with no whitespace or
+#     code/markup characters (text box-js decoded from a data:text/html src is not a
+#     request; a relative URL carrying a raw user agent is missed), AJAX/jQuery/sendBeacon/
 #     chrome.runtime.sendMessage, JXA fetches, node http/https/axios/socket.io/
 #     net.createConnection, and dns.* queries). No url_iocs entry
 #     whose URL is an about:, data:, javascript: or blob: target (it fetches nothing)
@@ -156,7 +158,7 @@ description = "box-js's rewrite strips comments (hideStrs) before it looks for @
 
 [[gaps]]
 id = "node-stubs-partial"
-description = "box-js's node module overrides (require_override.js) are partial. Members they lack throw: child_process.execFile/execFileSync/spawnSync, fs.writeFile/createWriteStream, os.tmpdir, net.connect, new net.Socket().connect (net.Socket is an empty constructor) - the usual node dropper and reverse-shell calls. Members they have are inert: child_process.exec is execSync (it logs, returns a string and never calls its callback), and spawn/fork return children whose handlers never run and which lack stdout/stdin (using those throws). So a stage chained in an exec callback or a child's close/data handler is silently not emulated. Where a throw lands decides what is lost: at top level, or in a global setInterval callback (called without try/catch), box-js re-runs the code without its overrides, dies at the first require of an overridden module and exits 1, losing everything from that call on; inside a callback box-js calls under try/catch (global setTimeout, net handlers, require('timers'), Promise reactions) only the rest of that callback is lost (exit 0). The run is ok either way, and no IOC names the failing call's command or endpoint. A box-js fix (fuller stubs)."
+description = "box-js's node module overrides (require_override.js) are partial. Members they lack throw: child_process.execFile/execFileSync/spawnSync, fs.writeFile/createWriteStream, os.tmpdir, net.connect, new net.Socket().connect (net.Socket is an empty constructor) - the usual node dropper and reverse-shell calls. The child_process members they have are inert: exec is execSync (it logs, returns a string and never calls its callback); spawn returns a child whose on() and stdout/stderr.on() are no-ops (its close/data handlers never run) and which has no stdin (using it throws); fork returns a child with only unref() (its on() throws). So a stage chained in an exec callback or a spawned child's handler is silently not emulated. Where a throw lands decides what is lost: at top level, in a global setInterval callback or in a socket.io-client handler (both called without try/catch), box-js re-runs the code without its overrides, dies at the first require of an overridden module and exits 1, losing everything from that call on; inside a callback box-js calls under try/catch (global setTimeout, net.createConnection handlers, require('timers')) only the rest of that callback is lost (exit 0); in a Promise reaction the rest of that promise chain is lost (exit 0). The run is ok either way, and no IOC names the failing call's command or endpoint. A box-js fix (fuller stubs)."
 
 [[gaps]]
 id = "timer-caps"

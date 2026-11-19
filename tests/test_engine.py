@@ -143,8 +143,12 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         # Path-relative: the browser fetches it from the page's origin.
         {"type": "Image.src", "value": "gate.php?c=1"},
         {"type": "Remote Script", "value": {"url": "/wp-content/s2.js"}},
+        # An absolute URL counts whatever characters its path or query holds.
+        {"type": "Image.src", "value": "https://c2.invalid/collect;sid=7"},
+        {"type": "Remote Script", "value": {"url": "https://c2.invalid/a.php?q=('x'){1}"}},
+        {"type": "Image.src", "value": "  //c2.invalid/p(1).gif"},
     ])
-    assert _summarise(r)["url_iocs"] == 5
+    assert _summarise(r)["url_iocs"] == 8
 
 
 def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):
@@ -157,10 +161,16 @@ def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):
         {"type": "UrlFetch", "value": {"url": " DATA:text/plain,x", "method": "GET"}},
         {"type": "XMLHttpRequest", "value": {"method": "GET", "url": "blob:https://a/1"}},
         {"type": "fetch", "value": {"url": "https://c2.invalid/a"}},
+        {"type": "Window Location", "value": {"url": "https://login.invalid/oauth2"}},
+        {"type": "window.open()", "value": {"url": "https://payload.invalid/invoice.zip"}},
+        {"type": "window.open()", "value": {"url": "about:blank"}},
         {"type": "dns.lookup()", "value": {"hostname": "c2.invalid"}},
         {"type": "GetObject()", "value": "script:http://c2.invalid/p.sct"},
+        # An anchor's href and setAttribute('src'|'href') share these types: not counted.
+        {"type": "HREF Location", "value": {"url": "https://a.invalid/"}},
+        {"type": "Element Source", "value": {"val": "https://a.invalid/"}},
     ])
-    assert _summarise(r)["url_iocs"] == 3
+    assert _summarise(r)["url_iocs"] == 5
 
 
 def test_summarise_survives_malformed_json(tmp_path):

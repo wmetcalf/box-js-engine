@@ -100,10 +100,13 @@ _WRITE_IOCS = frozenset({"filewrite", "newresource", "adodbstream"})
 #: script-src injection, jQuery, beacon, pixel, extension, JXA), the node stubs' http/axios/socket.io/net calls,
 #: and DNS queries (a DNS lookup names the C2 host as surely as a fetch of its URL does).
 #: The browser XMLHttpRequest, Remote Script and Image.src types are classified per entry
-#: (_ioc_family).
+#: (_ioc_family). Window Location (location.replace/assign) and window.open() navigate;
+#: HREF Location and Element Source are not counted: box-js also logs them for an anchor's
+#: href and for setAttribute('href'), which fetch nothing.
 _URL_IOCS = frozenset({
     "urlfetch", "xmlhttp", "fetch", "ajax", "jquery.get()", "jquery.getjson()",
     "navigator.sendbeacon()", "getobject()", "internetexplorer.application",
+    "window location", "window.open()",
     "chrome.runtime.sendmessage", "$.nsdata.datawithcontentsofurl()",
     "$.nsurlsession.sessionwithconfiguration().datataskwithurlcompletionhandler()",
     "http.get()", "http.request()", "axios.get()", "axios.post()", "socket.io-client()",
@@ -120,8 +123,11 @@ _NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob):", re.IGNORECASE)
 #: any text) is no request either. A path-relative value is: the browser fetches it from
 #: the page's origin.
 _SRC_IOCS = frozenset({"remote script", "image.src"})
-#: URL-shaped: no whitespace and none of the characters code or markup is made of.
-_URL_SHAPED = re.compile(r"[^\s<>(){};\"'`\\]+")
+#: An absolute (scheme:) or scheme-relative (//) URL: a request whatever its path holds.
+_ABSOLUTE_URL = re.compile(r"(?:[a-z][a-z0-9+.-]*:|//)\S", re.IGNORECASE)
+#: A plausible path-relative URL: no whitespace and none of the characters code or markup
+#: is made of (those make decoded text, not a path, far likelier).
+_RELATIVE_URL = re.compile(r"[^\s<>(){};\"'`\\]+")
 
 
 def _request_url(value) -> str | None:
@@ -140,8 +146,11 @@ def _ioc_family(entry: dict) -> str | None:
     value = entry.get("value")
     if t in _SRC_IOCS:
         url = _request_url(value)
-        return ("url" if url is not None and _URL_SHAPED.fullmatch(url.strip())
-                and _fetches(url) else None)
+        if url is None:
+            return None
+        url = url.strip()
+        shaped = _ABSOLUTE_URL.match(url) or _RELATIVE_URL.fullmatch(url)
+        return "url" if shaped and _fetches(url) else None
     if t == "xmlhttprequest":
         # Logged for open() ({method, url}) and for setRequestHeader ({field, value}).
         if not (isinstance(value, dict) and "url" in value):
