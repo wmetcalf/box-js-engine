@@ -246,11 +246,13 @@ def _load_json(path: Path, default, max_bytes: int = _MAX_JSON_BYTES):
 _UNREADABLE = object()
 
 
-def _ioc_report_unreadable(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> bool:
-    """IOC.json is there but its counts are unknown: box-js rewrites it whole on every IOC,
-    so a kill mid-write leaves it cut short, or it is over the parse cap."""
-    return (_is_regular(results / "IOC.json")
-            and _load_json(results / "IOC.json", _UNREADABLE, max_json_bytes) is _UNREADABLE)
+def _unreadable_analysis(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> list[str]:
+    """box-js's JSON analysis files that are there but cannot be parsed: box-js rewrites
+    each whole (IOC.json on every new IOC, urls.json on every logUrl), so a kill mid-write
+    leaves one empty or cut short; or it is over the parse cap."""
+    return [name for name in _ANALYSIS_FILES if name.endswith(".json")
+            and _is_regular(results / name)
+            and _load_json(results / name, _UNREADABLE, max_json_bytes) is _UNREADABLE]
 
 
 def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
@@ -620,13 +622,14 @@ class BoxJsEngine:
             ))
         artifacts = _declare_artifacts(results, outdir, limits, warnings)
 
-        if _ioc_report_unreadable(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes)):
+        unreadable = _unreadable_analysis(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes))
+        for name in unreadable:
             warnings.append(Warning(
-                code="ioc_report_unreadable",
-                message="IOC.json could not be parsed (cut short by a kill mid-write, or over "
-                        "the parse cap): the IOC counts are unknown, not zero",
+                code="analysis_unreadable",
+                message=f"{name} could not be parsed (cut short by a kill mid-write, or over "
+                        "the parse cap): what it counts is unknown, not zero",
             ))
-        elif summary["ioc_count"] <= 1:
+        if summary["ioc_count"] <= 1 and "IOC.json" not in unreadable:
             # box-js always logs a "Sample Name" IOC, so <=1 means it emulated
             # nothing. Not an error — plenty of samples are inert or bail early —
             # but a consumer ranking by ioc_count should be told it was silent

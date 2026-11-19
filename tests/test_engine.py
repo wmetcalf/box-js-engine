@@ -545,21 +545,42 @@ def test_a_stdout_flood_is_not_spooled_to_disk(tmp_path, monkeypatch):
     import os as _os
     import threading
 
-    # Measured on this test's own tree, with the child's TMPDIR inside it: the filesystem's
-    # free space is shared with every other process and made the test flaky.
+    import tempfile as _tempfile
+
+    # Measured on this test's own tree, with every temp dir (this process's and the
+    # child's) inside it: the filesystem's free space is shared with every other process
+    # and made the test flaky. A spool may be nameless (an O_TMPFILE TemporaryFile, or one
+    # unlinked after opening), so open files are counted through /proc as well as named ones.
     spool = tmp_path / "tmpdir"
     spool.mkdir()
     monkeypatch.setenv("TMPDIR", str(spool))
+    monkeypatch.setattr(_tempfile, "tempdir", str(spool))
+    root = str(tmp_path)
 
     def used() -> int:
-        total = 0
-        for root, _dirs, files in _os.walk(tmp_path):
+        seen: dict[tuple[int, int], int] = {}
+        for d, _dirs, files in _os.walk(tmp_path):
             for f in files:
                 try:
-                    total += _os.lstat(_os.path.join(root, f)).st_size
+                    st = _os.lstat(_os.path.join(d, f))
+                    seen[(st.st_dev, st.st_ino)] = st.st_size
                 except OSError:
                     pass
-        return total
+        for pid in _os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                fds = _os.listdir(f"/proc/{pid}/fd")
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    if _os.readlink(f"/proc/{pid}/fd/{fd}").startswith(root):
+                        st = _os.stat(f"/proc/{pid}/fd/{fd}")
+                        seen[(st.st_dev, st.st_ino)] = st.st_size
+                except OSError:
+                    pass
+        return sum(seen.values())
 
     highest = [used()]
     done = threading.Event()
@@ -591,8 +612,20 @@ def test_an_unreadable_ioc_report_is_not_called_silent(tmp_path, monkeypatch):
     res, _ = _detonate(tmp_path, monkeypatch, body)
     codes = [w.code for w in res.warnings]
     assert res.status == "ok"
-    assert "ioc_report_unreadable" in codes and "no_observable_behaviour" not in codes
+    assert codes == ["analysis_unreadable"]
+    assert "IOC.json" in res.warnings[0].message
     assert res.payload.fields["url_count"] == 1
+
+
+def test_a_cut_short_url_list_is_flagged_too(tmp_path, monkeypatch):
+    """box-js rewrites urls.json on every logUrl, even of a URL it has, so a kill cuts it
+    more often than IOC.json: url_count 0 is then unknown, not zero."""
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
+            " {type: 'XMLHTTP', value: {url: 'http://c2.invalid/'}}]));\n"
+            "fs.writeFileSync(path.join(res, 'urls.json'), '[\\n\\t\"http://c2.inv');\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [(w.code, "urls.json" in w.message) for w in res.warnings] == [("analysis_unreadable", True)]
+    assert res.payload.fields["url_iocs"] == 1
 
 
 def test_stderr_tail_is_kept_for_a_failed_run(tmp_path, monkeypatch):
