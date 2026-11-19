@@ -100,11 +100,13 @@ description = "Every other top-level file in the results dir: files the sample w
 #     write_iocs, url_iocs, url_count}. The *_iocs counts are IOC.json ENTRIES by type, not
 #     actions: box-js may log several entries for one action (an XMLHTTP open+send is XMLHTTP
 #     + UrlFetch; a scheduled task is Task Path + Task Arguments + Task). exec_iocs counts
-#     launch entries (Run, CommandExec, WMI, Task, CreateShortcut, WindowsInstaller, the JXA
-#     launches, node child_process `process ...`); write_iocs FileWrite/NewResource/
-#     ADODBStream; url_iocs network-request entries (UrlFetch, XMLHTTP, fetch, AJAX/jQuery/
-#     sendBeacon, JXA fetches, node http/https/axios/socket.io/net.createConnection, and dns.*
-#     queries). boxjs.result/1 counted fewer types.
+#     launch entries (Run, CommandExec, WMI, Task, CreateShortcut, WindowsInstaller
+#     InstallProduct, the JXA app launch, node child_process `process ...`, and PayloadExec:
+#     a downloaded stage ran); write_iocs FileWrite/NewResource/ADODBStream; url_iocs
+#     network-request entries (UrlFetch, XMLHTTP, fetch, XMLHttpRequest open, WMI GetObject
+#     moniker, IE Navigate, WindowsInstaller OpenPackage, AJAX/jQuery/sendBeacon/Image.src/
+#     chrome.runtime.sendMessage, JXA fetches, node http/https/axios/socket.io/
+#     net.createConnection, and dns.* queries). boxjs.result/1 counted fewer types.
 #     engine_error: Record{schema_version, error, ...}
 #     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).
 #     box_js_failed: box-js exited nonzero (not 4) or died by a signal having logged and written nothing, e.g. 3
@@ -130,7 +132,7 @@ description = "A timed-out run whose results dir exists is status ok with partia
 
 [[gaps]]
 id = "egress-mode"
-description = "With Limits.net_egress set the engine passes --download and box-js fetches next stages for real, but only through its real fetch paths: the XMLHTTP/WinHttpRequest ActiveX objects and the browser fetch(). The browser XMLHttpRequest and node's http/https/dns/net/axios are stubs in either mode, and they do not all behave as offline node would: https and dns requests fail asynchronously (EAI_AGAIN), http.request throws synchronously, http.get never calls back (response or error), and net.createConnection reports a connection and fires every handler it is given (connect, data and error alike). The payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
+description = "With Limits.net_egress set the engine passes --download and box-js fetches for real, but only through lib.fetchUrl: the XMLHTTP/WinHttpRequest ActiveX objects, the browser fetch(), and a direct lib.fetchUrl call from the sample (the facade exposes it). The browser XMLHttpRequest and node's http/https/dns/net/axios are stubs in either mode and do not behave as offline node would; e.g. dns lookups fail with EAI_AGAIN but resolve*/reverse with ECONNREFUSED (and a lookup of an IP literal or localhost succeeds), https requests fail asynchronously, http.get never calls back, http.request throws (or, given only `host`, logs nothing and returns undefined), and net.createConnection(options, cb) fires every handler (connect, data and error alike) while the positional (port, host, cb) form logs only the port and never connects. The payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
 
 [[gaps]]
 id = "containers-not-unpacked"
@@ -142,11 +144,19 @@ description = "Closed in Loadout base/dialin-engines-20261028 (095b1aea lists bo
 
 [[gaps]]
 id = "results-dir-trusted"
-description = "The sample no longer reaches node's host require, fs or box-js's lib itself (box-js #2): in-sandbox require is a fixed table of emulated modules, and lib is a frozen facade. That facade still lets the sample call logIOC/logUrl/logResource/writeFile, so it can add any IOC.json/urls.json entry it likes (inflating ioc_count and the exec/write/url counts) and chooses the contents of the files it drops. box-js refuses index-file names and its own <sha256>.bin / <sha256>_<name> names for those files. The engine reads only the run's own <sample>.results dir, declares only regular files (no symlinks, FIFOs or devices) under sanitized ids, and ignores JSON it cannot parse; the counts are a triage signal, not proof."
+description = "The sample no longer reaches node's host require, fs or box-js's lib itself (box-js #2): in-sandbox require is a fixed table of emulated modules, and lib is a frozen facade. That facade still exposes logIOC, logUrl, logResource, logSnippet, logJS, writeFile, runShellCommand and fetchUrl, so the sample can add any IOC.json/urls.json entry it likes (inflating ioc_count and every family count), chooses the contents of the files it drops, and with logSnippet can plant a file of its own (name and bytes) with a snippets.json entry, which the engine then declares as kind `snippet` (box-js's code) rather than `dropped`, with no write IOC. box-js refuses index-file names, device names and its own <sha256>.bin / <sha256>_<name> names for those files. The engine reads only the run's own <sample>.results dir, declares only regular files (no symlinks, FIFOs or devices) under sanitized ids, and ignores JSON it cannot parse; the counts and the snippet/dropped split are a triage signal, not proof."
+
+[[gaps]]
+id = "cc-on-not-applied"
+description = "box-js's rewrite strips comments (hideStrs) before it looks for @cc_on, so the usual comment-wrapped form (/*@cc_on @if (...) ... @else @*/ ... /*@end @*/) never reaches its conditional-compilation evaluator (cc_on.js): JScript-only branches are not run and a non-JScript @else fallback is, the opposite of cscript/wscript. --extract-conditional-code, which the engine passes, is disabled in box-js (if (false && ...)). Pre-existing in the fork (also with m4/cpp before box-js #2); a box-js fix."
+
+[[gaps]]
+id = "timer-caps"
+description = "box-js runs a repeating timers.setInterval at most 100 ticks and all timer callbacks at most 2000 times per analysis (box-js #3, against beacon floods). Behaviour a sample reaches only after those caps is not emulated, and the payload does not say a cap was hit: the 100-tick cap is silent, the 2000-fire cap leaves only a warning line in analysis.log. A run that hit a cap is still ok, without the timeout warning."
 
 [[gaps]]
 id = "loadout-family-lag"
-description = "Loadout's mapper keeps its own copies of the families (backend/loadout/boxjs.py EXEC_IOCS / URL_IOCS) and turns an IOC.json entry into an emulated_command or URL artifact only for those types; it copies the counts into coverage.measurements as-is. It still holds the boxjs.result/1 sets, so what /2 added is counted but not normalized: the node child_process `process ...`, WindowsInstaller and JXA launches produce no emulated_command, and a host only DNS-queried (dns.*, hostname only, never in urls.json) appears in no artifact, while coverage stays complete. Loadout also normalizes only the first 512 IOC.json entries; a repeating timers.setInterval (box-js #3: up to 100 ticks per interval, 2000 timer fires per run) can push late evidence past that, which Loadout reports as incomplete coverage."
+description = "Loadout's mapper keeps its own copies of the families (backend/loadout/boxjs.py EXEC_IOCS / URL_IOCS) and turns an IOC.json entry into an emulated_command or URL artifact only for those types; it copies the counts into coverage.measurements as-is. It still holds the boxjs.result/1 sets, so what /2 added is counted but not normalized: the node child_process `process ...`, WindowsInstaller, JXA app launch and PayloadExec entries produce no emulated_command, and a host only DNS-queried (dns.*, hostname only, never in urls.json) appears in no artifact, while coverage stays complete. Loadout also normalizes only the first 512 IOC.json entries; a repeating timers.setInterval (box-js #3: up to 100 ticks per interval, 2000 timer fires per run) can push late evidence past that, which Loadout reports as incomplete coverage."
 
 [[consumers]]
 name = "loadout"

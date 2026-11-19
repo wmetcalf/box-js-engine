@@ -14,9 +14,9 @@
 #
 # `file` IS A RUNTIME DEPENDENCY, not a convenience: box-js execs file(1) on every
 # resource it writes to classify dropped payloads, and silently mislabels them if it is
-# absent. No C toolchain or m4: box-js evaluates JScript @cc_on conditional compilation in
-# JS since wmetcalf/box-js#2 (it used to shell out to m4/cpp on the worker), so neither is
-# installed — the worker carries no compiler.
+# absent. No C toolchain or m4: since wmetcalf/box-js#2 box-js never runs m4/cpp (its
+# @cc_on handling is cc_on.js, in JS), so neither is installed and the worker carries no
+# compiler. (Comment-wrapped @cc_on is still not applied; see contract gap cc-on-not-applied.)
 #
 # NO NETWORK AT RUN TIME BY DEFAULT. The engine passes --fake-download unless the
 # worker's Limits.net_egress is set, in which case it passes --download and the

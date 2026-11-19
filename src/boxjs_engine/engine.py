@@ -17,9 +17,10 @@ Egress is taken from the worker, not guessed. `Limits.net_egress` decides betwee
 `--download` (really fetch the next stage) and `--fake-download` (return a synthetic
 200). An engine that fetched live payloads while the worker believed it was offline
 would be lying to the operator about what just happened on their network. `--download`
-reaches the network only through box-js's real fetch paths (the XMLHTTP/WinHttpRequest
-ActiveX objects and the browser fetch()); node's http/https/dns/net are stubs in either
-mode, and not all of them fail as offline node would (see the contract's egress-mode gap).
+reaches the network only through box-js's lib.fetchUrl (the XMLHTTP/WinHttpRequest ActiveX
+objects, the browser fetch(), and the sample calling lib.fetchUrl itself); node's
+http/https/dns/net are stubs in either mode, and not all of them fail as offline node
+would (see the contract's egress-mode gap).
 """
 from __future__ import annotations
 
@@ -52,7 +53,8 @@ EXTRA_ARGV_ENV = "BOXJS_EXTRA_ARGV"
 #: Version of the payload Record shape, on every payload (ok and engine_error) under
 #: `schema_version`. Bump it when a field is added, removed or changes meaning.
 #: /2: exec_iocs and url_iocs count more IOC types (node child_process/http/https/axios/
-#: socket.io/net, JXA, remote MSI, jQuery/beacon), and url_iocs counts DNS queries too.
+#: socket.io/net, JXA, remote MSI, PayloadExec, WMI/IE/browser fetches), and url_iocs counts
+#: DNS queries too.
 SCHEMA_VERSION = "boxjs.result/2"
 
 #: box-js's own analysis output, declared first and as kind `analysis`. env_vars.json is
@@ -79,24 +81,26 @@ _BASE_ARGV = [
 
 #: IOC types box-js emits that mean "the sample launched something". Kept in step with
 #: the logIOC call sites in analyze.js/lib.js/emulator/ and boilerplate.js (child_process
-#: logs `process ...`; the JXA launches match box-js's own tools/harrington-enrich.js; a
-#: WindowsInstaller IOC is a remote MSI install or open) — a missing entry silently drops
-#: execution evidence from the summary.
+#: logs `process ...`; the JXA app launch matches box-js's own tools/harrington-enrich.js;
+#: PayloadExec is box-js's sign that the sample ran a stage it downloaded) — a missing entry
+#: silently drops execution evidence from the summary. Not $.NSTask...launchAndReturnError():
+#: box-js's logIOC for it is commented out, so that type is never emitted. WindowsInstaller
+#: is classified per entry (_ioc_family).
 _EXEC_IOCS = frozenset({
     "run", "commandexec", "wmi.getobject.run", "wmi.getobject.create",
     "createshortcut", "task", "task path", "task arguments",
-    "process execsync()/exec()", "process spawn()", "process fork()",
-    "windowsinstaller", "$.nstask.alloc.init.launchandreturnerror()",
+    "process execsync()/exec()", "process spawn()", "process fork()", "payloadexec",
     "$.nsworkspace.sharedworkspace.openapplicationaturlconfigurationcompletionhandler()",
 })
 _WRITE_IOCS = frozenset({"filewrite", "newresource", "adodbstream"})
-#: Network requests: URL fetches (ActiveX, browser, jQuery, beacon, JXA), the node stubs'
-#: http/axios/socket.io/net calls, and DNS queries (a DNS lookup names the C2 host as
-#: surely as a fetch of its URL does). Not the browser `XMLHttpRequest` type: box-js logs
-#: it for setRequestHeader as well as for open, so it does not count requests.
+#: Network requests: URL fetches (ActiveX, WMI GetObject moniker, IE Navigate, browser,
+#: jQuery, beacon, pixel, extension, JXA), the node stubs' http/axios/socket.io/net calls,
+#: and DNS queries (a DNS lookup names the C2 host as surely as a fetch of its URL does).
+#: The browser XMLHttpRequest type is classified per entry (_ioc_family).
 _URL_IOCS = frozenset({
     "urlfetch", "xmlhttp", "fetch", "ajax", "jquery.get()", "jquery.getjson()",
-    "navigator.sendbeacon()", "$.nsdata.datawithcontentsofurl()",
+    "navigator.sendbeacon()", "getobject()", "internetexplorer.application", "image.src",
+    "chrome.runtime.sendmessage", "$.nsdata.datawithcontentsofurl()",
     "$.nsurlsession.sessionwithconfiguration().datataskwithurlcompletionhandler()",
     "http.get()", "http.request()", "axios.get()", "axios.post()", "socket.io-client()",
     "net.createconnection()",
@@ -105,8 +109,17 @@ _URL_IOCS = frozenset({
 _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 
 
-def _ioc_family(t: str) -> str | None:
-    """The summary family of a lower-cased box-js IOC type, or None."""
+def _ioc_family(entry: dict) -> str | None:
+    """The summary family of one IOC.json entry, or None."""
+    t = str(entry.get("type", "")).lower()
+    value = entry.get("value")
+    if t == "xmlhttprequest":
+        # Logged for open() ({method, url}) and for setRequestHeader ({field, value}).
+        return "url" if isinstance(value, dict) and "url" in value else None
+    if t == "windowsinstaller":
+        # InstallProduct ("installed a remote MSI") installs; OpenPackage ("opened a remote
+        # MSI package") only fetches the package. box-js tells them apart only by description.
+        return "exec" if "installed" in str(entry.get("description", "")).lower() else "url"
     if t in _EXEC_IOCS:
         return "exec"
     if t in _WRITE_IOCS:
@@ -206,7 +219,7 @@ def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
     for entry in iocs:
         if not isinstance(entry, dict):
             continue
-        family = _ioc_family(str(entry.get("type", "")).lower())
+        family = _ioc_family(entry)
         if family == "exec":
             n_exec += 1
         elif family == "write":

@@ -80,13 +80,14 @@ def test_summarise_counts_the_node_module_stub_iocs(tmp_path):
 
 def test_summarise_counts_the_other_launch_and_fetch_iocs(tmp_path):
     """Launches and fetches box-js logs outside the node stubs: a remote MSI install, the JXA
-    app launch and task (box-js's own tools/harrington-enrich.js counts both as launches),
-    the JXA and jQuery/beacon fetches."""
+    app launch (box-js's own tools/harrington-enrich.js counts it as a launch), the JXA and
+    jQuery/beacon fetches. Not $.NSTask: box-js's logIOC for it is commented out, so the type
+    is never emitted and counting it would claim a coverage box-js does not have."""
     r = _results(tmp_path, [
-        {"type": "WindowsInstaller", "value": {"url": "http://a.invalid/p.msi"}},
+        {"type": "WindowsInstaller", "value": {"url": "http://a.invalid/p.msi"},
+         "description": "The script installed a remote MSI."},
         {"type": "$.NSWorkSpace.sharedWorkspace.openApplicationAtURLConfigurationCompletionHandler()",
          "value": {"url": "file:///x.app"}},
-        {"type": "$.NSTask.alloc.init.launchAndReturnError()", "value": "x"},
         {"type": "$.NSData.dataWithContentsOfURL()", "value": {"url": "http://b.invalid/"}},
         {"type": "$.NSURLSession.sessionWithConfiguration().dataTaskWithURLCompletionHandler()",
          "value": {"url": "http://b.invalid/"}},
@@ -96,7 +97,30 @@ def test_summarise_counts_the_other_launch_and_fetch_iocs(tmp_path):
         {"type": "navigator.sendBeacon()", "value": {"url": "http://c.invalid/"}},
     ])
     s = _summarise(r)
-    assert (s["exec_iocs"], s["url_iocs"], s["write_iocs"]) == (3, 6, 0)
+    assert (s["exec_iocs"], s["url_iocs"], s["write_iocs"]) == (2, 6, 0)
+
+
+def test_summarise_tells_entries_of_one_type_apart_by_what_box_js_logged(tmp_path):
+    """Types box-js logs for more than one action: an XMLHttpRequest open() carries a url, a
+    setRequestHeader does not; a WindowsInstaller InstallProduct installs (a launch), an
+    OpenPackage only fetches the package. Plus the fetches logged under their own names
+    (WMI GetObject moniker, IE Navigate, Image.src, chrome.runtime.sendMessage) and
+    PayloadExec, box-js's sign that a downloaded stage ran."""
+    r = _results(tmp_path, [
+        {"type": "XMLHttpRequest", "value": {"method": "POST", "url": "https://a.invalid/c"}},
+        {"type": "XMLHttpRequest", "value": {"field": "X-Id", "value": "1"}},
+        {"type": "WindowsInstaller", "value": {"url": "http://b.invalid/p.msi"},
+         "description": "The script installed a remote MSI."},
+        {"type": "WindowsInstaller", "value": {"url": "http://b.invalid/q.msi"},
+         "description": "The script opened a remote MSI package."},
+        {"type": "GetObject()", "value": "script:http://c.invalid/p.sct"},
+        {"type": "InternetExplorer.Application", "value": {"url": "http://c.invalid/"}},
+        {"type": "Image.src", "value": "https://c.invalid/p.gif"},
+        {"type": "chrome.runtime.sendMessage", "value": {"method": "??", "url": "http://c.invalid/"}},
+        {"type": "PayloadExec", "value": "EXECUTED DOWNLOADED PAYLOAD"},
+    ])
+    s = _summarise(r)
+    assert (s["exec_iocs"], s["url_iocs"]) == (2, 6)
 
 
 def test_summarise_survives_malformed_json(tmp_path):
