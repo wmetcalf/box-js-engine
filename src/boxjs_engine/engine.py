@@ -116,8 +116,9 @@ _URL_IOCS = frozenset({
 _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 
 
-#: A request target that fetches nothing: an about:, data:, javascript: or blob: URL.
-_NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob):", re.IGNORECASE)
+#: A request target that fetches nothing: an about:, data:, javascript:, blob:, mailto: or
+#: tel: URL, or a drive-letter path ("C:/...", a local file).
+_NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob|mailto|tel|[a-z]):", re.IGNORECASE)
 #: Types box-js logs for whatever value is set (any element's src, Image.src, and ScriptSrc:
 #: a script element of box-js's ActiveXObject("dom") document appended or given a src by
 #: setAttribute, kept out of urls.json; the default document logs those as Remote Script or
@@ -307,13 +308,13 @@ def _is_jscript_encoded(path: Path) -> bool:
 
 
 #: A fatal V8 error on box-js's stderr, at the start of a line: node's "FATAL ERROR: " (heap
-#: OOM) or V8's own "# Fatal error in ..." / "# Fatal JavaScript ..." block (V8_Fatal: a
-#: failed CHECK, an invalid-size abort) (box-js's uglify child prints parse errors as one JSON line quoting the
+#: OOM) or V8's own "# Fatal ..." block (V8_Fatal: a failed CHECK, an invalid-size abort,
+#: "# Fatal process out of memory") (box-js's uglify child prints parse errors as one JSON line quoting the
 #: sample's strings). Not proof: the sample can still print such a line (box-js's host
 #: xmldom reports a malformed document's text there, and an uncaught Error prints its
 #: message), and a node child of box-js that dies of OOM prints it while analyze.js lives
 #: on. So it only ever adds a "may be partial" warning, and its text is never echoed.
-_FATAL = re.compile(rb"\n(?:FATAL ERROR: |# Fatal (?:error|JavaScript) )")
+_FATAL = re.compile(rb"\n(?:FATAL ERROR: |# Fatal )")
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")

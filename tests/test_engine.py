@@ -149,12 +149,17 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "Image.src", "value": "  //c2.invalid/p(1).gif"},
         # A drive-letter path is a local file, not a URL scheme.
         {"type": "Image.src", "value": "C:\\Users\\Public\\a.gif"},
+        {"type": "Image.src", "value": "C:/Users/Public/a.gif"},
+        {"type": "Remote Script", "value": {"url": "mailto:a@b.invalid"}},
+        # Relative paths that merely start like a no-fetch scheme name.
+        {"type": "Image.src", "value": "data.php?x=1"},
+        {"type": "Remote Script", "value": {"url": "about-us/s.js"}},
         # A script element of box-js's ActiveXObject("dom") document, appended or given a src
         # by setAttribute: logged as ScriptSrc (and kept out of urls.json by box-js).
         {"type": "ScriptSrc", "value": {"url": "https://c2.invalid/stage.js", "tag": "script"}},
         {"type": "ScriptSrc", "value": {"url": "about:blank", "tag": "script"}},
     ])
-    assert _summarise(r)["url_iocs"] == 9
+    assert _summarise(r)["url_iocs"] == 11
 
 
 def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):
@@ -666,8 +671,8 @@ def test_a_crash_is_seen_behind_a_long_native_stack_trace(tmp_path, monkeypatch)
 def test_a_v8_fatal_abort_is_a_crash_too(tmp_path, monkeypatch):
     """V8's own fatal path (a failed CHECK, an invalid-size abort) prints a '# Fatal ...' block,
     not node's FATAL ERROR line, and _run.js reports that signal death as exit 0 as well."""
-    body = ("process.stderr.write('\\n\\n#\\n# Fatal error in , line 0\\n# Fatal JavaScript invalid "
-            "size error 169220804\\n#\\n#\\n#\\n#FailureMessage Object: 0x7ffd\\n');\n"
+    body = ("process.stderr.write('\\n\\n#\\n# Fatal process out of memory: Zone\\n#\\n"
+            "#FailureMessage Object: 0x7ffd\\n');\n"
             "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
     res, _ = _detonate(tmp_path, monkeypatch, body)
     assert [w.code for w in res.warnings] == ["box_js_crashed"]
