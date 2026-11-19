@@ -125,6 +125,22 @@ def test_summarise_tells_entries_of_one_type_apart_by_what_box_js_logged(tmp_pat
     assert (s["exec_iocs"], s["url_iocs"]) == (3, 6)
 
 
+def test_element_src_counts_only_a_network_url(tmp_path):
+    """box-js logs Remote Script for the src of any created element and Image.src for any
+    value: about:blank, data: URIs and decoded inline HTML fetch nothing."""
+    r = _results(tmp_path, [
+        {"type": "Remote Script", "value": {"url": "https://c.invalid/stage2.js"}},
+        {"type": "Remote Script", "value": {"url": "//c.invalid/stage3.js"}},
+        {"type": "Remote Script", "value": {"url": "about:blank"}},
+        {"type": "Remote Script", "value": {"url": "data:image/gif;base64,R0lGODlhAQABAAAAACw="}},
+        {"type": "Remote Script", "value": {"url": "<b>hi</b>"}},
+        {"type": "Image.src", "value": "HTTP://c.invalid/p.gif"},
+        {"type": "Image.src", "value": "data:image/png;base64,AAAA"},
+        {"type": "Image.src", "value": {"not": "a string"}},
+    ])
+    assert _summarise(r)["url_iocs"] == 3
+
+
 def test_summarise_survives_malformed_json(tmp_path):
     r = tmp_path / "x.js.results"
     r.mkdir()

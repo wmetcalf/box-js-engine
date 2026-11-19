@@ -99,11 +99,11 @@ _WRITE_IOCS = frozenset({"filewrite", "newresource", "adodbstream"})
 #: Network requests: URL fetches (ActiveX, WMI GetObject moniker, IE Navigate, browser,
 #: script-src injection, jQuery, beacon, pixel, extension, JXA), the node stubs' http/axios/socket.io/net calls,
 #: and DNS queries (a DNS lookup names the C2 host as surely as a fetch of its URL does).
-#: The browser XMLHttpRequest type is classified per entry (_ioc_family).
+#: The browser XMLHttpRequest, Remote Script and Image.src types are classified per entry
+#: (_ioc_family).
 _URL_IOCS = frozenset({
     "urlfetch", "xmlhttp", "fetch", "ajax", "jquery.get()", "jquery.getjson()",
-    "navigator.sendbeacon()", "getobject()", "internetexplorer.application", "image.src",
-    "remote script",
+    "navigator.sendbeacon()", "getobject()", "internetexplorer.application",
     "chrome.runtime.sendmessage", "$.nsdata.datawithcontentsofurl()",
     "$.nsurlsession.sessionwithconfiguration().datataskwithurlcompletionhandler()",
     "http.get()", "http.request()", "axios.get()", "axios.post()", "socket.io-client()",
@@ -113,10 +113,20 @@ _URL_IOCS = frozenset({
 _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 
 
+#: A value that names something to fetch over the network (scheme-relative included).
+_NETWORK_URL = re.compile(r"(?:[a-z][a-z0-9+.-]*://|//)[^\s/]", re.IGNORECASE)
+#: Types box-js logs for whatever value is set (any element's src, Image.src): only a
+#: network URL is a request; about:blank, data: URIs and decoded inline HTML are not.
+_SRC_IOCS = frozenset({"remote script", "image.src"})
+
+
 def _ioc_family(entry: dict) -> str | None:
     """The summary family of one IOC.json entry, or None."""
     t = str(entry.get("type", "")).lower()
     value = entry.get("value")
+    if t in _SRC_IOCS:
+        url = value.get("url") if isinstance(value, dict) else value
+        return "url" if isinstance(url, str) and _NETWORK_URL.match(url) else None
     if t == "xmlhttprequest":
         # Logged for open() ({method, url}) and for setRequestHeader ({field, value}).
         return "url" if isinstance(value, dict) and "url" in value else None

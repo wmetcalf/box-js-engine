@@ -105,7 +105,8 @@ description = "Every other top-level file in the results dir: files the sample w
 #     cannot be told apart reliably), the JXA app launch, node child_process `process ...`, and PayloadExec:
 #     a downloaded stage ran); write_iocs FileWrite/NewResource/ADODBStream; url_iocs
 #     network-request entries (UrlFetch, XMLHTTP, fetch, XMLHttpRequest open, WMI GetObject
-#     moniker, IE Navigate, script-src injection (Remote Script), AJAX/jQuery/sendBeacon/Image.src/
+#     moniker, IE Navigate, Remote Script and Image.src set to a network URL (not about:, data: or
+#     inline HTML), AJAX/jQuery/sendBeacon/
 #     chrome.runtime.sendMessage, JXA fetches, node http/https/axios/socket.io/
 #     net.createConnection, and dns.* queries). boxjs.result/1 counted fewer types.
 #     engine_error: Record{schema_version, error, ...}
@@ -152,8 +153,12 @@ id = "cc-on-not-applied"
 description = "box-js's rewrite strips comments (hideStrs) before it looks for @cc_on, so the usual comment-wrapped form (/*@cc_on @if (...) ... @else @*/ ... /*@end @*/) never reaches its conditional-compilation evaluator (cc_on.js): JScript-only branches are not run and a non-JScript @else fallback is, the opposite of cscript/wscript. --extract-conditional-code, which the engine passes, is disabled in box-js (if (false && ...)). Pre-existing in the fork (also with m4/cpp before box-js #2); a box-js fix."
 
 [[gaps]]
+id = "node-net-connect-unstubbed"
+description = "box-js's node net stub has only createConnection, Socket (an empty constructor) and createServer. net.connect(...) and new net.Socket().connect(...), node's usual TCP-connect forms and the shape of a node reverse shell, throw; box-js's fallback re-runs the code without its module overrides and dies at require('net'). box-js exits 1: the run is ok if the sample logged anything first, engine_error box_js_failed otherwise, and no IOC or URL names the endpoint. A box-js fix (alias them through createConnection)."
+
+[[gaps]]
 id = "timer-caps"
-description = "Timers are capped, and the payload never says a cap was hit (a capped run is ok, without the timeout warning). require('timers') (box-js #3): a repeating setInterval runs at most 100 ticks and all its timer callbacks at most 2000 times per analysis; the 2000-fire cap leaves a warning line in analysis.log, the 100-tick cap nothing. The globals are separate WSH stubs: setInterval runs its callback once and never repeats; setTimeout runs its callback synchronously, at most 301 times per callback source, then prints 'Recursive setTimeout() loop detected' as script output. Behaviour a sample reaches only after these limits is not emulated."
+description = "Timers are capped or not emulated, and the payload never says so (such a run is ok, without the timeout warning). require('timers') (box-js #3): a repeating setInterval runs at most 100 ticks and all its timer callbacks at most 2000 times per analysis; the 2000-fire cap leaves a warning line in analysis.log, the 100-tick cap nothing. The WSH/window stubs never repeat: the global setInterval runs a function callback once and a string callback never, window.setInterval never runs its callback; the global setTimeout runs its callback synchronously, at most 301 times per callback source (all string callbacks share one budget), window.setTimeout uncapped. Behaviour a sample reaches only past these limits is not emulated."
 
 [[gaps]]
 id = "loadout-family-lag"
