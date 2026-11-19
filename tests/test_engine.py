@@ -134,6 +134,9 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "Remote Script", "value": {"url": "about:blank"}},
         {"type": "Remote Script", "value": {"url": "data:image/gif;base64,R0lGODlhAQABAAAAACw="}},
         {"type": "Remote Script", "value": {"url": "<b>hi</b>"}},
+        # box-js decodes a data:text/html;base64 src and logs the decoded text, any text.
+        {"type": "Remote Script", "value": {"url": "alert(1)"}},
+        {"type": "Remote Script", "value": {"url": "var a = 1;\nrun(a)"}},
         {"type": "Image.src", "value": "HTTP://c.invalid/p.gif"},
         {"type": "Image.src", "value": "data:image/png;base64,AAAA"},
         {"type": "Image.src", "value": {"not": "a string"}},

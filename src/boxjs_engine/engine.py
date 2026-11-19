@@ -116,9 +116,12 @@ _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 #: A request target that fetches nothing: an about:, data:, javascript: or blob: URL.
 _NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob):", re.IGNORECASE)
 #: Types box-js logs for whatever value is set (any element's src, Image.src); a value that
-#: is not a URL at all (the inline HTML box-js decodes from a data:text/html src) is no
-#: request either. A path-relative value is: the browser fetches it from the page's origin.
+#: is not URL-shaped (the HTML or script box-js decodes from a data:text/html;base64 src,
+#: any text) is no request either. A path-relative value is: the browser fetches it from
+#: the page's origin.
 _SRC_IOCS = frozenset({"remote script", "image.src"})
+#: URL-shaped: no whitespace and none of the characters code or markup is made of.
+_URL_SHAPED = re.compile(r"[^\s<>(){};\"'`\\]+")
 
 
 def _request_url(value) -> str | None:
@@ -137,7 +140,7 @@ def _ioc_family(entry: dict) -> str | None:
     value = entry.get("value")
     if t in _SRC_IOCS:
         url = _request_url(value)
-        return ("url" if url is not None and url.strip() and not url.lstrip().startswith("<")
+        return ("url" if url is not None and _URL_SHAPED.fullmatch(url.strip())
                 and _fetches(url) else None)
     if t == "xmlhttprequest":
         # Logged for open() ({method, url}) and for setRequestHeader ({field, value}).
