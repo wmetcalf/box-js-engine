@@ -542,16 +542,31 @@ def test_files_written_before_a_self_exit_4_are_kept(tmp_path, monkeypatch):
 
 def test_a_stdout_flood_is_not_spooled_to_disk(tmp_path, monkeypatch):
     """stdout is unused and stderr keeps only a tail: nothing a sample prints is stored."""
-    import shutil as _sh
+    import os as _os
     import threading
 
-    free_before = _sh.disk_usage(tmp_path).free
-    lowest = [free_before]
+    # Measured on this test's own tree, with the child's TMPDIR inside it: the filesystem's
+    # free space is shared with every other process and made the test flaky.
+    spool = tmp_path / "tmpdir"
+    spool.mkdir()
+    monkeypatch.setenv("TMPDIR", str(spool))
+
+    def used() -> int:
+        total = 0
+        for root, _dirs, files in _os.walk(tmp_path):
+            for f in files:
+                try:
+                    total += _os.lstat(_os.path.join(root, f)).st_size
+                except OSError:
+                    pass
+        return total
+
+    highest = [used()]
     done = threading.Event()
 
     def watch():
         while not done.is_set():
-            lowest[0] = min(lowest[0], _sh.disk_usage(tmp_path).free)
+            highest[0] = max(highest[0], used())
             done.wait(0.01)
 
     t = threading.Thread(target=watch)
@@ -565,7 +580,19 @@ def test_a_stdout_flood_is_not_spooled_to_disk(tmp_path, monkeypatch):
         t.join()
     assert res.status == "ok"
     # 600 MiB printed; at no point was more than a little of it on disk.
-    assert free_before - lowest[0] < (64 << 20)
+    assert highest[0] < (64 << 20)
+
+
+def test_an_unreadable_ioc_report_is_not_called_silent(tmp_path, monkeypatch):
+    """box-js rewrites IOC.json whole on every IOC, so a kill mid-write leaves it cut short;
+    zero counts then mean 'unknown', not 'no behaviour'."""
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), '[{\"type\": \"Sample Name\"}, {\"type\": \"Ru');\n"
+            "fs.writeFileSync(path.join(res, 'urls.json'), JSON.stringify(['http://a.invalid/']));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    codes = [w.code for w in res.warnings]
+    assert res.status == "ok"
+    assert "ioc_report_unreadable" in codes and "no_observable_behaviour" not in codes
+    assert res.payload.fields["url_count"] == 1
 
 
 def test_stderr_tail_is_kept_for_a_failed_run(tmp_path, monkeypatch):

@@ -100,7 +100,7 @@ _WRITE_IOCS = frozenset({"filewrite", "newresource", "adodbstream"})
 #: script-src injection, jQuery, beacon, pixel, extension, JXA), the node stubs' http/axios/socket.io/net calls,
 #: and DNS queries (a DNS lookup names the C2 host as surely as a fetch of its URL does).
 #: The browser XMLHttpRequest, Remote Script and Image.src types are classified per entry
-#: (_ioc_family). Window Location (location.replace/assign) and window.open() navigate;
+#: (_ioc_family). Window Location (location.replace) and window.open() navigate;
 #: HREF Location and Element Source are not counted: box-js also logs them for an anchor's
 #: href and for setAttribute('href'), which fetch nothing.
 _URL_IOCS = frozenset({
@@ -241,6 +241,16 @@ def _load_json(path: Path, default, max_bytes: int = _MAX_JSON_BYTES):
         return json.loads(path.read_text(errors="replace"))
     except (OSError, ValueError, RecursionError):   # unreadable, not JSON, or too deep
         return default
+
+
+_UNREADABLE = object()
+
+
+def _ioc_report_unreadable(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> bool:
+    """IOC.json is there but its counts are unknown: box-js rewrites it whole on every IOC,
+    so a kill mid-write leaves it cut short, or it is over the parse cap."""
+    return (_is_regular(results / "IOC.json")
+            and _load_json(results / "IOC.json", _UNREADABLE, max_json_bytes) is _UNREADABLE)
 
 
 def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
@@ -610,7 +620,13 @@ class BoxJsEngine:
             ))
         artifacts = _declare_artifacts(results, outdir, limits, warnings)
 
-        if summary["ioc_count"] <= 1:
+        if _ioc_report_unreadable(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes)):
+            warnings.append(Warning(
+                code="ioc_report_unreadable",
+                message="IOC.json could not be parsed (cut short by a kill mid-write, or over "
+                        "the parse cap): the IOC counts are unknown, not zero",
+            ))
+        elif summary["ioc_count"] <= 1:
             # box-js always logs a "Sample Name" IOC, so <=1 means it emulated
             # nothing. Not an error — plenty of samples are inert or bail early —
             # but a consumer ranking by ioc_count should be told it was silent
