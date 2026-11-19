@@ -118,11 +118,13 @@ _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 
 #: A request target that fetches nothing: an about:, data:, javascript: or blob: URL.
 _NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob):", re.IGNORECASE)
-#: Types box-js logs for whatever value is set (any element's src, Image.src); a value that
+#: Types box-js logs for whatever value is set (any element's src, Image.src, a script
+#: element appended or given a src by setAttribute - ScriptSrc, which box-js keeps out of
+#: urls.json); a value that
 #: is not URL-shaped (the HTML or script box-js decodes from a data:text/html;base64 src,
 #: any text) is no request either. A path-relative value is: the browser fetches it from
 #: the page's origin.
-_SRC_IOCS = frozenset({"remote script", "image.src"})
+_SRC_IOCS = frozenset({"remote script", "image.src", "scriptsrc"})
 #: An absolute (scheme:) or scheme-relative (//) URL: a request whatever its path holds.
 _ABSOLUTE_URL = re.compile(r"(?:[a-z][a-z0-9+.-]*:|//)\S", re.IGNORECASE)
 #: A plausible path-relative URL: no whitespace and none of the characters code or markup
@@ -300,6 +302,10 @@ def _is_jscript_encoded(path: Path) -> bool:
         head = f.read()
     start = _JSE_START.search(head)
     return start is not None and _JSE_TAIL.search(head, start.end()) is not None
+
+
+#: V8's line for a fatal error (heap OOM, a failed CHECK) on box-js's stderr.
+_FATAL = re.compile(rb"FATAL ERROR: [^\r\n]{0,200}")
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -539,6 +545,17 @@ class BoxJsEngine:
                 message=f"box-js's own {vm_timeout}s timeout ended the analysis; results are partial",
             ))
 
+        # _run.js reports a signal death of analyze.js (a V8 heap-OOM abort, an OOM kill) as
+        # exit 0; V8's fatal line on the inherited stderr is what is left to tell it from a
+        # clean run.
+        crash = _FATAL.search(stderr)
+        if crash and not killed:
+            warnings.append(Warning(
+                code="box_js_crashed",
+                message="box-js died mid-analysis (" + crash.group(0).decode("utf-8", "replace")
+                        + "); results are partial",
+            ))
+
         results = _results_dir(outdir, input, before)
         # Judged on what box-js produced, not on the exit code or a marker alone: evidence
         # logged before a nonzero exit is kept, and a plain script can quote a JSE marker.
@@ -629,7 +646,8 @@ class BoxJsEngine:
                 message=f"{name} could not be parsed (cut short by a kill mid-write, or over "
                         "the parse cap): what it counts is unknown, not zero",
             ))
-        if summary["ioc_count"] <= 1 and "IOC.json" not in unreadable:
+        if (summary["ioc_count"] <= 1 and "IOC.json" not in unreadable
+                and not any(w.code == "box_js_crashed" for w in warnings)):
             # box-js always logs a "Sample Name" IOC, so <=1 means it emulated
             # nothing. Not an error — plenty of samples are inert or bail early —
             # but a consumer ranking by ioc_count should be told it was silent

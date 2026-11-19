@@ -49,7 +49,7 @@ id = "snippets.json"
 path = "*.results/snippets.json"
 kind = "analysis"
 role = "snippet_index"
-description = "Index of code snippets (eval'd JS, WScript commands): {snippet file name: {as: ...}}; the bodies are declared as `snippet`. Rewritten after each snippet, so a run killed mid-write can lack the newest entry."
+description = "Index of code snippets (eval'd JS, WScript commands): {snippet file name: {as: ...}}; the bodies are declared as `snippet`. Rewritten after each snippet, so a run killed mid-write can lack the newest entry, or leave it cut short (warning analysis_unreadable): the engine then knows box-js's snippets only by their names (<uuid>.js) and by bare-uuid files matching a Run command, so a WMI or ScriptControl snippet is declared `dropped`."
 
 [[artifacts]]
 id = "resources.json"
@@ -105,8 +105,8 @@ description = "Every other top-level file in the results dir: files the sample w
 #     cannot be told apart reliably), the JXA app launch, node child_process `process ...`, and PayloadExec:
 #     a downloaded stage ran); write_iocs FileWrite/NewResource/ADODBStream; url_iocs
 #     network-request entries (UrlFetch, XMLHTTP, fetch, XMLHttpRequest open, WMI GetObject
-#     moniker, IE Navigate, Window Location and window.open() navigations, Remote Script
-#     and Image.src set to an absolute URL, or to a path-relative one with no whitespace or
+#     moniker, IE Navigate, Window Location and window.open() navigations, Remote Script,
+#     ScriptSrc (not in urls.json) and Image.src set to an absolute URL, or to a path-relative one with no whitespace or
 #     code/markup characters (text box-js decoded from a data:text/html src is not a
 #     request; a relative URL carrying a raw user agent is missed), AJAX/jQuery/sendBeacon/
 #     chrome.runtime.sendMessage, JXA fetches, node http/https/axios/socket.io/
@@ -134,7 +134,7 @@ description = "Findings exist only inside the IOC.json artifact as box-js IOC ty
 
 [[gaps]]
 id = "killed-is-ok"
-description = "A timed-out run whose results dir exists is status ok with partial results and warning timeout: box-js's own timeout (--timeout, 60% of Limits.timeout_s; recognised by the run lasting that long, since stdout is the sample's to write) leaves exit_code 0 and killed=false; the engine's wall clock (Limits.timeout_s + 10) sets killed=true and exit_code -9. A nonzero exit_code is ok too unless box-js logged and wrote nothing: exit 4 is then rejected unparseable, any other nonzero exit engine_error box_js_failed. box-js rewrites each JSON analysis file whole (IOC.json on every new IOC, urls.json on every logUrl, even of a URL it has), so a kill mid-write (more likely since box-js #3 lets intervals repeat) can leave one empty or cut short. It is then still declared, what it counts reads 0, and the run carries warning analysis_unreadable naming the file (also when it is over the parse cap, max(64 MiB, max_artifact_bytes)); an unreadable IOC.json replaces no_observable_behaviour."
+description = "A timed-out run whose results dir exists is status ok with partial results and warning timeout: box-js's own timeout (--timeout, 60% of Limits.timeout_s; recognised by the run lasting that long, since stdout is the sample's to write) leaves exit_code 0 and killed=false; the engine's wall clock (Limits.timeout_s + 10) sets killed=true and exit_code -9. A nonzero exit_code is ok too unless box-js logged and wrote nothing: exit 4 is then rejected unparseable, any other nonzero exit engine_error box_js_failed. box-js rewrites each JSON analysis file whole (IOC.json on every new IOC, urls.json on every logUrl, even of a URL it has), so a kill mid-write (more likely since box-js #3 lets intervals repeat) can leave one empty or cut short. It is then still declared, what it counts reads 0, and the run carries warning analysis_unreadable naming the file (also when it is over the parse cap, max(64 MiB, max_artifact_bytes)); an unreadable IOC.json replaces no_observable_behaviour (an unreadable snippets.json changes artifact kinds, see snippets.json). _run.js reports a signal death of analyze.js (a V8 heap-OOM abort, an OOM kill) as exit 0; the engine recognises V8's FATAL ERROR line on stderr and warns box_js_crashed (results partial) instead of no_observable_behaviour. A death that prints nothing still reads as a clean run."
 
 [[gaps]]
 id = "egress-mode"

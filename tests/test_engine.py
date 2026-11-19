@@ -147,8 +147,12 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "Image.src", "value": "https://c2.invalid/collect;sid=7"},
         {"type": "Remote Script", "value": {"url": "https://c2.invalid/a.php?q=('x'){1}"}},
         {"type": "Image.src", "value": "  //c2.invalid/p(1).gif"},
+        # A script element appended to the DOM, or its setAttribute('src'): logged as
+        # ScriptSrc (and kept out of urls.json by box-js).
+        {"type": "ScriptSrc", "value": {"url": "https://c2.invalid/stage.js", "tag": "script"}},
+        {"type": "ScriptSrc", "value": {"url": "about:blank", "tag": "script"}},
     ])
-    assert _summarise(r)["url_iocs"] == 8
+    assert _summarise(r)["url_iocs"] == 9
 
 
 def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):
@@ -542,6 +546,10 @@ def test_files_written_before_a_self_exit_4_are_kept(tmp_path, monkeypatch):
 
 def test_a_stdout_flood_is_not_spooled_to_disk(tmp_path, monkeypatch):
     """stdout is unused and stderr keeps only a tail: nothing a sample prints is stored."""
+    import pytest
+
+    if not Path("/proc/self/fd").is_dir():
+        pytest.skip("counts open files through /proc (Linux)")
     import os as _os
     import threading
 
@@ -626,6 +634,18 @@ def test_a_cut_short_url_list_is_flagged_too(tmp_path, monkeypatch):
     res, _ = _detonate(tmp_path, monkeypatch, body)
     assert [(w.code, "urls.json" in w.message) for w in res.warnings] == [("analysis_unreadable", True)]
     assert res.payload.fields["url_iocs"] == 1
+
+
+def test_a_box_js_crash_is_not_a_clean_run(tmp_path, monkeypatch):
+    """_run.js turns a signal death of analyze.js (a V8 heap-OOM abort, an OOM kill) into
+    exit 0; V8's fatal line on stderr is what is left to tell it from a clean, inert run."""
+    body = ("process.stderr.write('\\n<--- Last few GCs --->\\nFATAL ERROR: Reached heap limit "
+            "Allocation failed - JavaScript heap out of memory\\n');\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert res.status == "ok"
+    assert [w.code for w in res.warnings] == ["box_js_crashed"]
+    assert "heap out of memory" in res.warnings[0].message
 
 
 def test_stderr_tail_is_kept_for_a_failed_run(tmp_path, monkeypatch):
