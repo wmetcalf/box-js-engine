@@ -85,21 +85,25 @@ _BASE_ARGV = [
 #: PayloadExec is box-js's sign that the sample ran a stage it downloaded) — a missing entry
 #: silently drops execution evidence from the summary. Not $.NSTask...launchAndReturnError():
 #: box-js's logIOC for it is commented out, so that type is never emitted. WindowsInstaller
-#: is classified per entry (_ioc_family).
+#: (a remote MSI InstallProduct or OpenPackage) counts as a launch either way: box-js keeps
+#: one entry per (type, value), so an open then an install of the same URL leaves only the
+#: open's entry, and splitting by description would lose the install.
 _EXEC_IOCS = frozenset({
     "run", "commandexec", "wmi.getobject.run", "wmi.getobject.create",
     "createshortcut", "task", "task path", "task arguments",
     "process execsync()/exec()", "process spawn()", "process fork()", "payloadexec",
+    "windowsinstaller",
     "$.nsworkspace.sharedworkspace.openapplicationaturlconfigurationcompletionhandler()",
 })
 _WRITE_IOCS = frozenset({"filewrite", "newresource", "adodbstream"})
 #: Network requests: URL fetches (ActiveX, WMI GetObject moniker, IE Navigate, browser,
-#: jQuery, beacon, pixel, extension, JXA), the node stubs' http/axios/socket.io/net calls,
+#: script-src injection, jQuery, beacon, pixel, extension, JXA), the node stubs' http/axios/socket.io/net calls,
 #: and DNS queries (a DNS lookup names the C2 host as surely as a fetch of its URL does).
 #: The browser XMLHttpRequest type is classified per entry (_ioc_family).
 _URL_IOCS = frozenset({
     "urlfetch", "xmlhttp", "fetch", "ajax", "jquery.get()", "jquery.getjson()",
     "navigator.sendbeacon()", "getobject()", "internetexplorer.application", "image.src",
+    "remote script",
     "chrome.runtime.sendmessage", "$.nsdata.datawithcontentsofurl()",
     "$.nsurlsession.sessionwithconfiguration().datataskwithurlcompletionhandler()",
     "http.get()", "http.request()", "axios.get()", "axios.post()", "socket.io-client()",
@@ -116,10 +120,6 @@ def _ioc_family(entry: dict) -> str | None:
     if t == "xmlhttprequest":
         # Logged for open() ({method, url}) and for setRequestHeader ({field, value}).
         return "url" if isinstance(value, dict) and "url" in value else None
-    if t == "windowsinstaller":
-        # InstallProduct ("installed a remote MSI") installs; OpenPackage ("opened a remote
-        # MSI package") only fetches the package. box-js tells them apart only by description.
-        return "exec" if "installed" in str(entry.get("description", "")).lower() else "url"
     if t in _EXEC_IOCS:
         return "exec"
     if t in _WRITE_IOCS:

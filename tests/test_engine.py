@@ -102,8 +102,9 @@ def test_summarise_counts_the_other_launch_and_fetch_iocs(tmp_path):
 
 def test_summarise_tells_entries_of_one_type_apart_by_what_box_js_logged(tmp_path):
     """Types box-js logs for more than one action: an XMLHttpRequest open() carries a url, a
-    setRequestHeader does not; a WindowsInstaller InstallProduct installs (a launch), an
-    OpenPackage only fetches the package. Plus the fetches logged under their own names
+    setRequestHeader does not. WindowsInstaller is a launch whether InstallProduct or
+    OpenPackage logged it: box-js drops a later entry whose (type, value) matches an earlier
+    one, so an open then an install of one URL leaves only the open's entry. Plus the fetches logged under their own names
     (WMI GetObject moniker, IE Navigate, Image.src, chrome.runtime.sendMessage) and
     PayloadExec, box-js's sign that a downloaded stage ran."""
     r = _results(tmp_path, [
@@ -116,11 +117,12 @@ def test_summarise_tells_entries_of_one_type_apart_by_what_box_js_logged(tmp_pat
         {"type": "GetObject()", "value": "script:http://c.invalid/p.sct"},
         {"type": "InternetExplorer.Application", "value": {"url": "http://c.invalid/"}},
         {"type": "Image.src", "value": "https://c.invalid/p.gif"},
+        {"type": "Remote Script", "value": {"url": "https://c.invalid/stage2.js"}},
         {"type": "chrome.runtime.sendMessage", "value": {"method": "??", "url": "http://c.invalid/"}},
         {"type": "PayloadExec", "value": "EXECUTED DOWNLOADED PAYLOAD"},
     ])
     s = _summarise(r)
-    assert (s["exec_iocs"], s["url_iocs"]) == (2, 6)
+    assert (s["exec_iocs"], s["url_iocs"]) == (3, 6)
 
 
 def test_summarise_survives_malformed_json(tmp_path):

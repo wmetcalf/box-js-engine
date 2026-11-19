@@ -101,10 +101,11 @@ description = "Every other top-level file in the results dir: files the sample w
 #     actions: box-js may log several entries for one action (an XMLHTTP open+send is XMLHTTP
 #     + UrlFetch; a scheduled task is Task Path + Task Arguments + Task). exec_iocs counts
 #     launch entries (Run, CommandExec, WMI, Task, CreateShortcut, WindowsInstaller
-#     InstallProduct, the JXA app launch, node child_process `process ...`, and PayloadExec:
+#     (InstallProduct or OpenPackage: box-js keeps one entry per type+value, so the two
+#     cannot be told apart reliably), the JXA app launch, node child_process `process ...`, and PayloadExec:
 #     a downloaded stage ran); write_iocs FileWrite/NewResource/ADODBStream; url_iocs
 #     network-request entries (UrlFetch, XMLHTTP, fetch, XMLHttpRequest open, WMI GetObject
-#     moniker, IE Navigate, WindowsInstaller OpenPackage, AJAX/jQuery/sendBeacon/Image.src/
+#     moniker, IE Navigate, script-src injection (Remote Script), AJAX/jQuery/sendBeacon/Image.src/
 #     chrome.runtime.sendMessage, JXA fetches, node http/https/axios/socket.io/
 #     net.createConnection, and dns.* queries). boxjs.result/1 counted fewer types.
 #     engine_error: Record{schema_version, error, ...}
@@ -132,7 +133,7 @@ description = "A timed-out run whose results dir exists is status ok with partia
 
 [[gaps]]
 id = "egress-mode"
-description = "With Limits.net_egress set the engine passes --download and box-js fetches for real, but only through lib.fetchUrl: the XMLHTTP/WinHttpRequest ActiveX objects, the browser fetch(), and a direct lib.fetchUrl call from the sample (the facade exposes it). The browser XMLHttpRequest and node's http/https/dns/net/axios are stubs in either mode and do not behave as offline node would; e.g. dns lookups fail with EAI_AGAIN but resolve*/reverse with ECONNREFUSED (and a lookup of an IP literal or localhost succeeds), https requests fail asynchronously, http.get never calls back, http.request throws (or, given only `host`, logs nothing and returns undefined), and net.createConnection(options, cb) fires every handler (connect, data and error alike) while the positional (port, host, cb) form logs only the port and never connects. The payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
+description = "With Limits.net_egress set the engine passes --download and box-js fetches for real, but only through lib.fetchUrl: the XMLHTTP/WinHttpRequest ActiveX objects, the browser fetch(), and a direct lib.fetchUrl call from the sample (the facade exposes it). The browser XMLHttpRequest and node's http/https/dns/net/axios are stubs in either mode and do not behave as offline node would; e.g. dns lookups fail with EAI_AGAIN but resolve*/reverse with ECONNREFUSED (and a lookup of an IP literal or localhost succeeds), https requests fail asynchronously, http.get never calls back, http.request throws (or, given only `host`, logs nothing and returns undefined), and net.createConnection fires every .on() handler it is given (connect, data and error alike); its callback argument runs only in the (options, cb) form, while the positional (port, host, cb) form logs only the port and never runs cb. The payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
 
 [[gaps]]
 id = "containers-not-unpacked"
@@ -152,7 +153,7 @@ description = "box-js's rewrite strips comments (hideStrs) before it looks for @
 
 [[gaps]]
 id = "timer-caps"
-description = "box-js runs a repeating timers.setInterval at most 100 ticks and all timer callbacks at most 2000 times per analysis (box-js #3, against beacon floods). Behaviour a sample reaches only after those caps is not emulated, and the payload does not say a cap was hit: the 100-tick cap is silent, the 2000-fire cap leaves only a warning line in analysis.log. A run that hit a cap is still ok, without the timeout warning."
+description = "Timers are capped, and the payload never says a cap was hit (a capped run is ok, without the timeout warning). require('timers') (box-js #3): a repeating setInterval runs at most 100 ticks and all its timer callbacks at most 2000 times per analysis; the 2000-fire cap leaves a warning line in analysis.log, the 100-tick cap nothing. The globals are separate WSH stubs: setInterval runs its callback once and never repeats; setTimeout runs its callback synchronously, at most 301 times per callback source, then prints 'Recursive setTimeout() loop detected' as script output. Behaviour a sample reaches only after these limits is not emulated."
 
 [[gaps]]
 id = "loadout-family-lag"
