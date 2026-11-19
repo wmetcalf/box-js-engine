@@ -137,6 +137,25 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "Image.src", "value": "HTTP://c.invalid/p.gif"},
         {"type": "Image.src", "value": "data:image/png;base64,AAAA"},
         {"type": "Image.src", "value": {"not": "a string"}},
+        # Path-relative: the browser fetches it from the page's origin.
+        {"type": "Image.src", "value": "gate.php?c=1"},
+        {"type": "Remote Script", "value": {"url": "/wp-content/s2.js"}},
+    ])
+    assert _summarise(r)["url_iocs"] == 5
+
+
+def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):
+    """about:, data:, javascript: and blob: targets are not requests whichever API got
+    them (IE Navigate('about:blank'), fetch(dataUri) for HTML smuggling); entries without a
+    url (a dns query's hostname) still count."""
+    r = _results(tmp_path, [
+        {"type": "InternetExplorer.Application", "value": {"url": "about:blank"}},
+        {"type": "fetch", "value": {"url": "data:application/octet-stream;base64,TVqQ"}},
+        {"type": "UrlFetch", "value": {"url": " DATA:text/plain,x", "method": "GET"}},
+        {"type": "XMLHttpRequest", "value": {"method": "GET", "url": "blob:https://a/1"}},
+        {"type": "fetch", "value": {"url": "https://c2.invalid/a"}},
+        {"type": "dns.lookup()", "value": {"hostname": "c2.invalid"}},
+        {"type": "GetObject()", "value": "script:http://c2.invalid/p.sct"},
     ])
     assert _summarise(r)["url_iocs"] == 3
 

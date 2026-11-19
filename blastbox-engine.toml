@@ -105,10 +105,12 @@ description = "Every other top-level file in the results dir: files the sample w
 #     cannot be told apart reliably), the JXA app launch, node child_process `process ...`, and PayloadExec:
 #     a downloaded stage ran); write_iocs FileWrite/NewResource/ADODBStream; url_iocs
 #     network-request entries (UrlFetch, XMLHTTP, fetch, XMLHttpRequest open, WMI GetObject
-#     moniker, IE Navigate, Remote Script and Image.src set to a network URL (not about:, data: or
+#     moniker, IE Navigate, Remote Script and Image.src (set to a URL, path-relative included, not
 #     inline HTML), AJAX/jQuery/sendBeacon/
 #     chrome.runtime.sendMessage, JXA fetches, node http/https/axios/socket.io/
-#     net.createConnection, and dns.* queries). boxjs.result/1 counted fewer types.
+#     net.createConnection, and dns.* queries). No url_iocs entry
+#     whose URL is an about:, data:, javascript: or blob: target (it fetches nothing)
+#     counts. boxjs.result/1 counted fewer types.
 #     engine_error: Record{schema_version, error, ...}
 #     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).
 #     box_js_failed: box-js exited nonzero (not 4) or died by a signal having logged and written nothing, e.g. 3
@@ -153,8 +155,8 @@ id = "cc-on-not-applied"
 description = "box-js's rewrite strips comments (hideStrs) before it looks for @cc_on, so the usual comment-wrapped form (/*@cc_on @if (...) ... @else @*/ ... /*@end @*/) never reaches its conditional-compilation evaluator (cc_on.js): JScript-only branches are not run and a non-JScript @else fallback is, the opposite of cscript/wscript. --extract-conditional-code, which the engine passes, is disabled in box-js (if (false && ...)). Pre-existing in the fork (also with m4/cpp before box-js #2); a box-js fix."
 
 [[gaps]]
-id = "node-net-connect-unstubbed"
-description = "box-js's node net stub has only createConnection, Socket (an empty constructor) and createServer. net.connect(...) and new net.Socket().connect(...), node's usual TCP-connect forms and the shape of a node reverse shell, throw; box-js's fallback re-runs the code without its module overrides and dies at require('net'). box-js exits 1: the run is ok if the sample logged anything first, engine_error box_js_failed otherwise, and no IOC or URL names the endpoint. A box-js fix (alias them through createConnection)."
+id = "node-stubs-partial"
+description = "box-js's node module overrides (require_override.js) give each module only a few members: child_process execSync/exec/spawn/fork; fs writeFileSync/mkdirSync/existsSync/statSync; os a handful of host facts; net createConnection, Socket (an empty constructor) and createServer. Calling any other member (child_process.execFile/execFileSync/spawnSync, fs.writeFile/createWriteStream, os.tmpdir, net.connect, new net.Socket().connect - the usual node dropper and reverse-shell calls) throws. At top level box-js then re-runs the code without its overrides and dies at the first require of an overridden module (exit 1); inside a Promise or timer callback the error is swallowed (exit 0). Either way the run is ok, every count from that call on is 0 (no_observable_behaviour if nothing was logged before), and no IOC names the command or endpoint. A box-js fix (fuller stubs)."
 
 [[gaps]]
 id = "timer-caps"

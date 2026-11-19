@@ -113,11 +113,22 @@ _URL_IOCS = frozenset({
 _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 
 
-#: A value that names something to fetch over the network (scheme-relative included).
-_NETWORK_URL = re.compile(r"(?:[a-z][a-z0-9+.-]*://|//)[^\s/]", re.IGNORECASE)
-#: Types box-js logs for whatever value is set (any element's src, Image.src): only a
-#: network URL is a request; about:blank, data: URIs and decoded inline HTML are not.
+#: A request target that fetches nothing: an about:, data:, javascript: or blob: URL.
+_NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob):", re.IGNORECASE)
+#: Types box-js logs for whatever value is set (any element's src, Image.src); a value that
+#: is not a URL at all (the inline HTML box-js decodes from a data:text/html src) is no
+#: request either. A path-relative value is: the browser fetches it from the page's origin.
 _SRC_IOCS = frozenset({"remote script", "image.src"})
+
+
+def _request_url(value) -> str | None:
+    """The URL an IOC value names (a {url} record or a bare string), or None."""
+    url = value.get("url") if isinstance(value, dict) else value
+    return url if isinstance(url, str) else None
+
+
+def _fetches(url: str | None) -> bool:
+    return url is None or not _NO_FETCH_URL.match(url)
 
 
 def _ioc_family(entry: dict) -> str | None:
@@ -125,17 +136,21 @@ def _ioc_family(entry: dict) -> str | None:
     t = str(entry.get("type", "")).lower()
     value = entry.get("value")
     if t in _SRC_IOCS:
-        url = value.get("url") if isinstance(value, dict) else value
-        return "url" if isinstance(url, str) and _NETWORK_URL.match(url) else None
+        url = _request_url(value)
+        return ("url" if url is not None and url.strip() and not url.lstrip().startswith("<")
+                and _fetches(url) else None)
     if t == "xmlhttprequest":
         # Logged for open() ({method, url}) and for setRequestHeader ({field, value}).
-        return "url" if isinstance(value, dict) and "url" in value else None
+        if not (isinstance(value, dict) and "url" in value):
+            return None
+        return "url" if _fetches(_request_url(value)) else None
     if t in _EXEC_IOCS:
         return "exec"
     if t in _WRITE_IOCS:
         return "write"
     if t in _URL_IOCS or _URL_IOC_FORM.fullmatch(t):
-        return "url"
+        # Entries without a URL (a dns query's {hostname}) are requests too.
+        return "url" if _fetches(_request_url(value)) else None
     return None
 
 
