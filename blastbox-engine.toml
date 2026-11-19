@@ -49,7 +49,7 @@ id = "snippets.json"
 path = "*.results/snippets.json"
 kind = "analysis"
 role = "snippet_index"
-description = "Index of code snippets (eval'd JS, WScript commands): {snippet file name: {as: ...}}; the bodies are declared as `snippet`. Rewritten after each snippet, so a run killed mid-write can lack the newest entry."
+description = "Index of code snippets (eval'd JS, WScript commands): {snippet file name: {as: ...}}; the bodies are declared as `snippet`. Rewritten after each snippet, so a run killed mid-write can lack the newest entry, or leave it cut short (warning analysis_unreadable): the engine then knows box-js's snippets only by their names (<uuid>.js) and by bare-uuid files matching a Run command, so a WMI or ScriptControl snippet is declared `dropped`."
 
 [[artifacts]]
 id = "resources.json"
@@ -97,7 +97,25 @@ description = "Every other top-level file in the results dir: files the sample w
 
 [payload]
 # ok: Record{schema_version, exit_code, killed, net_egress, results_dir, ioc_count, exec_iocs,
-#     write_iocs, url_iocs, url_count}. engine_error: Record{schema_version, error, ...}
+#     write_iocs, url_iocs, url_count}. The *_iocs counts are IOC.json ENTRIES by type, not
+#     actions: box-js may log several entries for one action (an XMLHTTP open+send is XMLHTTP
+#     + UrlFetch; a scheduled task is Task Path + Task Arguments + Task). exec_iocs counts
+#     launch entries (Run, CommandExec, WMI, Task, CreateShortcut, WindowsInstaller
+#     (InstallProduct or OpenPackage: box-js keeps one entry per type+value, so the two
+#     cannot be told apart reliably), the JXA app launch, node child_process `process ...`, and PayloadExec:
+#     a downloaded stage ran); write_iocs FileWrite/NewResource/ADODBStream; url_iocs
+#     network-request entries (UrlFetch, XMLHTTP, fetch, XMLHttpRequest open, WMI GetObject
+#     moniker, IE Navigate, Window Location and window.open() navigations, Remote Script,
+#     ScriptSrc (not in urls.json) and Image.src set to an absolute URL, or to a path-relative one with no whitespace or
+#     code/markup characters (text box-js decoded from a data:text/html src is not a
+#     request; a relative URL carrying a raw user agent is missed), AJAX/jQuery/sendBeacon/
+#     chrome.runtime.sendMessage, JXA fetches, node http/https/axios/socket.io/
+#     net.createConnection, and dns.* queries). No url_iocs entry
+#     whose URL is an about:, data:, javascript:, blob:, mailto: or tel: target, a local
+#     file: URL (as node parses it, backslashes as slashes: no host, localhost or a drive
+#     letter; file://host is a UNC fetch and counts) or a drive-letter path (it fetches nothing)
+#     counts. boxjs.result/1 counted fewer types.
+#     engine_error: Record{schema_version, error, ...}
 #     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).
 #     box_js_failed: box-js exited nonzero (not 4) or died by a signal having logged and written nothing, e.g. 3
 #     when its own rewrite failed; adds exit_code + stderr_tail.
@@ -105,7 +123,7 @@ description = "Every other top-level file in the results dir: files the sample w
 #     A harness-sealed engine_error (the engine raised) is Record{error} without schema_version.
 root = "record"
 node_types = ["record"]
-schema_version = "boxjs.result/1"
+schema_version = "boxjs.result/2"
 required_root_fields = ["schema_version", "exit_code", "killed", "net_egress", "results_dir", "ioc_count",
                         "exec_iocs", "write_iocs", "url_iocs", "url_count"]
 
@@ -118,11 +136,11 @@ description = "Findings exist only inside the IOC.json artifact as box-js IOC ty
 
 [[gaps]]
 id = "killed-is-ok"
-description = "A timed-out run whose results dir exists is status ok with partial results and warning timeout: box-js's own timeout (--timeout, 60% of Limits.timeout_s; recognised by the run lasting that long, since stdout is the sample's to write) leaves exit_code 0 and killed=false; the engine's wall clock (Limits.timeout_s + 10) sets killed=true and exit_code -9. A nonzero exit_code is ok too unless box-js logged and wrote nothing: exit 4 is then rejected unparseable, any other nonzero exit engine_error box_js_failed."
+description = "A timed-out run whose results dir exists is status ok with partial results and warning timeout: box-js's own timeout (--timeout, 60% of Limits.timeout_s; recognised by the run lasting that long, since stdout is the sample's to write) leaves exit_code 0 and killed=false; the engine's wall clock (Limits.timeout_s + 10) sets killed=true and exit_code -9. A nonzero exit_code is ok too unless box-js logged and wrote nothing: exit 4 is then rejected unparseable, any other nonzero exit engine_error box_js_failed. box-js rewrites each JSON analysis file whole (IOC.json on every new IOC, urls.json on every logUrl, even of a URL it has), so a kill mid-write (more likely since box-js #3 lets intervals repeat) can leave one empty or cut short. It is then still declared, what it counts reads 0, and the run carries warning analysis_unreadable naming the file (also when it is over the parse cap, max(64 MiB, max_artifact_bytes)); an unreadable IOC.json replaces no_observable_behaviour (an unreadable snippets.json changes artifact kinds, see snippets.json). _run.js reports a signal death of analyze.js (a V8 heap-OOM abort, an OOM kill) as exit 0; the engine looks for V8's fatal output (node's FATAL ERROR line, or V8's own '# Fatal ...' block, at the start of a line, searched as stderr streams, since node 22's native stack trace after it can outrun the kept tail) and then warns box_js_crashed (results may be partial) instead of no_observable_behaviour. It is a hint, not proof: a node child of box-js (the uglify preprocess) can die of OOM while analyze.js finishes, and the sample can print such a line itself (box-js's host xmldom echoes a malformed document's text to stderr; an uncaught Error prints its message), so a sample can mark its own run as possibly partial, never hide a crash that printed the line. The warning never repeats the line's text. A death that prints nothing still reads as a clean run."
 
 [[gaps]]
 id = "egress-mode"
-description = "With Limits.net_egress set the engine passes --download and box-js fetches next stages for real; the payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
+description = "With Limits.net_egress set the engine passes --download and box-js fetches for real, but only through lib.fetchUrl: the XMLHTTP/WinHttpRequest ActiveX objects, the browser fetch(), and a direct lib.fetchUrl call from the sample (the facade exposes it). The browser XMLHttpRequest and node's http/https/dns/net/axios are stubs in either mode and do not behave as offline node would; e.g. dns lookups fail with EAI_AGAIN but resolve*/reverse with ECONNREFUSED (and a lookup of an IP literal or localhost succeeds), https requests fail asynchronously, http.get never calls back, http.request throws (or, given only `host`, logs nothing and returns undefined), and net.createConnection fires every .on() handler it is given (connect, data and error alike); its callback argument runs only in the (options, cb) form, while the positional (port, host, cb) form logs only the port and never runs cb. The payload's net_egress records which mode ran. The contract lists only `none` because that is how it is built and deployed."
 
 [[gaps]]
 id = "containers-not-unpacked"
@@ -130,11 +148,31 @@ description = "box-js parses raw JScript only: a WSF (<job>/<script>), an HTA (H
 
 [[gaps]]
 id = "loadout-rejected-is-unavailable"
-description = "Loadout (feat/engine-contract) does not list boxjs in REJECTION_IS_VERDICT, so a rejected result (jscript_encoded, unparseable) reaches run_blastbox as EngineUnavailable ('engine could not run') rather than a verdict that this input is unsupported."
+description = "Closed in Loadout base/dialin-engines-20261028 (095b1aea lists boxjs in REJECTION_IS_VERDICT: a rejected result is an input_rejected verdict). A Loadout build without it (e.g. feat/engine-contract) still turns a rejected result (jscript_encoded, unparseable) into EngineUnavailable ('engine could not run') rather than a verdict that this input is unsupported."
 
 [[gaps]]
 id = "results-dir-trusted"
-description = "box-js gives the sample's sandbox the host require (a known box-js residual), so a sample can write anything into its results dir. The engine reads only the run's own <sample>.results dir, declares only regular files (no symlinks, FIFOs or devices) under sanitized ids, and ignores JSON it cannot parse, but the contents of those files are the sample's to forge."
+description = "The sample no longer reaches node's host require, fs or box-js's lib itself (box-js #2): in-sandbox require is a fixed table of emulated modules, and lib is a frozen facade. That facade still exposes logIOC, logUrl, logResource, logSnippet, logJS, writeFile, runShellCommand and fetchUrl, so the sample can add any IOC.json/urls.json entry it likes (inflating ioc_count and every family count), chooses the contents of the files it drops, and with logSnippet can plant a file of its own (name and bytes) with a snippets.json entry, which the engine then declares as kind `snippet` (box-js's code) rather than `dropped`, with no write IOC. box-js refuses index-file names, device names and its own <sha256>.bin / <sha256>_<name> names for those files. The engine reads only the run's own <sample>.results dir, declares only regular files (no symlinks, FIFOs or devices) under sanitized ids, and ignores JSON it cannot parse; the counts and the snippet/dropped split are a triage signal, not proof."
+
+[[gaps]]
+id = "cc-on-not-applied"
+description = "box-js's rewrite strips comments (hideStrs) before it looks for @cc_on, so the usual comment-wrapped form (/*@cc_on @if (...) ... @else @*/ ... /*@end @*/) never reaches its conditional-compilation evaluator (cc_on.js): JScript-only branches are not run and a non-JScript @else fallback is, the opposite of cscript/wscript. --extract-conditional-code, which the engine passes, is disabled in box-js (if (false && ...)). Pre-existing in the fork (also with m4/cpp before box-js #2); a box-js fix."
+
+[[gaps]]
+id = "node-stubs-partial"
+description = "box-js's node module overrides (require_override.js) are partial. Members they lack throw: child_process.execFile/execFileSync/spawnSync, fs.writeFile/createWriteStream, os.tmpdir, net.connect, new net.Socket().connect (net.Socket is an empty constructor) - the usual node dropper and reverse-shell calls. The child_process members they have are inert: exec is execSync (it logs, returns a string and never calls its callback); spawn returns a child whose on() and stdout/stderr.on() are no-ops (its close/data handlers never run) and which has no stdin (using it throws); fork returns a child with only unref() (its on() throws). So a stage chained in an exec callback or a spawned child's handler is silently not emulated. Where a throw lands decides what is lost: at top level, in a global setInterval callback or in a socket.io-client handler (both called without try/catch), box-js re-runs the code without its overrides, dies at the first require of an overridden module and exits 1, losing everything from that call on; inside a callback box-js calls under try/catch (global setTimeout, net.createConnection handlers, require('timers')) only the rest of that callback is lost (exit 0); in a Promise reaction the rest of that promise chain is lost (exit 0). The run is ok either way, and no IOC names the failing call's command or endpoint. A box-js fix (fuller stubs)."
+
+[[gaps]]
+id = "browser-stubs-partial"
+description = "box-js's browser objects are partial too: location/window.location have replace (logged as Window Location) but no assign, so location.assign(url) throws, box-js's fallback fails the same way and exits 1, and the run is ok with nothing from that call on and the redirect URL logged nowhere. document.location.assign works only in the fallback and is logged under types no family counts. A box-js fix."
+
+[[gaps]]
+id = "timer-caps"
+description = "Timers are capped or not emulated, and the payload never says so (such a run is ok, without the timeout warning). require('timers') (box-js #3): a repeating setInterval runs at most 100 ticks and all its timer callbacks at most 2000 times per analysis; the 2000-fire cap leaves a warning line in analysis.log, the 100-tick cap nothing. The WSH/window stubs never repeat: the global setInterval runs a function callback once and a string callback never, window.setInterval never runs its callback; the global setTimeout runs its callback synchronously, at most 301 times per callback source (all string callbacks share one budget), window.setTimeout uncapped. Behaviour a sample reaches only past these limits is not emulated."
+
+[[gaps]]
+id = "loadout-family-lag"
+description = "Loadout's mapper keeps its own copies of the families (backend/loadout/boxjs.py EXEC_IOCS / URL_IOCS) and turns an IOC.json entry into an emulated_command or URL artifact only for those types; it copies the counts into coverage.measurements as-is. It still holds the boxjs.result/1 sets, so what /2 added is counted but not normalized: the node child_process `process ...`, WindowsInstaller, JXA app launch and PayloadExec entries produce no emulated_command, and a host only DNS-queried (dns.*, hostname only, never in urls.json) appears in no artifact, while coverage stays complete. Loadout also normalizes only the first 512 IOC.json entries; a repeating timers.setInterval (box-js #3: up to 100 ticks per interval, 2000 timer fires per run) can push late evidence past that, which Loadout reports as incomplete coverage. Loadout also refuses the whole result (EngineUnavailable) when a declared analysis file such as a cut-short IOC.json or urls.json is not valid JSON."
 
 [[consumers]]
 name = "loadout"

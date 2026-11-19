@@ -48,6 +48,156 @@ def test_summarise_classifies_ioc_families(tmp_path):
     assert s["url_count"] == 1
 
 
+def test_summarise_counts_the_node_module_stub_iocs(tmp_path):
+    """box-js's node stubs log their own IOC names (boilerplate.js): child_process as
+    `process ...`, http/https/dns/net by module and method. Each is execution or network
+    evidence, not just another entry in ioc_count."""
+    r = _results(tmp_path, [
+        {"type": "Sample Name", "value": {}},
+        {"type": "process execSync()/exec()", "value": {"command": "whoami"}},
+        {"type": "process spawn()", "value": {"file": "cmd.exe"}},
+        {"type": "process fork()", "value": {"file": "x.js"}},
+        {"type": "http.get()", "value": {"url": "http://a.invalid/"}},
+        {"type": "http.request()", "value": {"url": "http://a.invalid/"}},
+        {"type": "https.get()", "value": {"url": "https://b.invalid/"}},
+        {"type": "https.request()", "value": {"url": "https://b.invalid/"}},
+        {"type": "dns.lookup()", "value": {"hostname": "c.invalid"}},
+        {"type": "dns.resolveTxt()", "value": {"hostname": "c.invalid"}},
+        {"type": "net.createConnection()", "value": {"host": "d.invalid"}},
+        {"type": "axios.get()", "value": {"url": "http://e.invalid/"}},
+        {"type": "axios.post()", "value": {"url": "http://e.invalid/"}},
+        {"type": "socket.io-client()", "value": {"url": "http://e.invalid/"}},
+        # Not a module call: a lookalike name must not be counted by prefix alone.
+        {"type": "https.", "value": {}},
+        {"type": "dnsx.lookup()", "value": {}},
+    ])
+    s = _summarise(r)
+    assert s["ioc_count"] == 16
+    assert s["exec_iocs"] == 3
+    assert s["url_iocs"] == 10
+    assert s["write_iocs"] == 0
+
+
+def test_summarise_counts_the_other_launch_and_fetch_iocs(tmp_path):
+    """Launches and fetches box-js logs outside the node stubs: a remote MSI install, the JXA
+    app launch (box-js's own tools/harrington-enrich.js counts it as a launch), the JXA and
+    jQuery/beacon fetches. Not $.NSTask: box-js's logIOC for it is commented out, so the type
+    is never emitted and counting it would claim a coverage box-js does not have."""
+    r = _results(tmp_path, [
+        {"type": "WindowsInstaller", "value": {"url": "http://a.invalid/p.msi"},
+         "description": "The script installed a remote MSI."},
+        {"type": "$.NSWorkSpace.sharedWorkspace.openApplicationAtURLConfigurationCompletionHandler()",
+         "value": {"url": "file:///x.app"}},
+        {"type": "$.NSData.dataWithContentsOfURL()", "value": {"url": "http://b.invalid/"}},
+        {"type": "$.NSURLSession.sessionWithConfiguration().dataTaskWithURLCompletionHandler()",
+         "value": {"url": "http://b.invalid/"}},
+        {"type": "AJAX", "value": {"url": "http://c.invalid/"}},
+        {"type": "JQuery.get()", "value": {"url": "http://c.invalid/"}},
+        {"type": "JQuery.getJSON()", "value": {"url": "http://c.invalid/"}},
+        {"type": "navigator.sendBeacon()", "value": {"url": "http://c.invalid/"}},
+    ])
+    s = _summarise(r)
+    assert (s["exec_iocs"], s["url_iocs"], s["write_iocs"]) == (2, 6, 0)
+
+
+def test_summarise_tells_entries_of_one_type_apart_by_what_box_js_logged(tmp_path):
+    """Types box-js logs for more than one action: an XMLHttpRequest open() carries a url, a
+    setRequestHeader does not. WindowsInstaller is a launch whether InstallProduct or
+    OpenPackage logged it: box-js drops a later entry whose (type, value) matches an earlier
+    one, so an open then an install of one URL leaves only the open's entry. Plus the fetches logged under their own names
+    (WMI GetObject moniker, IE Navigate, Image.src, chrome.runtime.sendMessage) and
+    PayloadExec, box-js's sign that a downloaded stage ran."""
+    r = _results(tmp_path, [
+        {"type": "XMLHttpRequest", "value": {"method": "POST", "url": "https://a.invalid/c"}},
+        {"type": "XMLHttpRequest", "value": {"field": "X-Id", "value": "1"}},
+        {"type": "WindowsInstaller", "value": {"url": "http://b.invalid/p.msi"},
+         "description": "The script installed a remote MSI."},
+        {"type": "WindowsInstaller", "value": {"url": "http://b.invalid/q.msi"},
+         "description": "The script opened a remote MSI package."},
+        {"type": "GetObject()", "value": "script:http://c.invalid/p.sct"},
+        {"type": "InternetExplorer.Application", "value": {"url": "http://c.invalid/"}},
+        {"type": "Image.src", "value": "https://c.invalid/p.gif"},
+        {"type": "Remote Script", "value": {"url": "https://c.invalid/stage2.js"}},
+        {"type": "chrome.runtime.sendMessage", "value": {"method": "??", "url": "http://c.invalid/"}},
+        {"type": "PayloadExec", "value": "EXECUTED DOWNLOADED PAYLOAD"},
+    ])
+    s = _summarise(r)
+    assert (s["exec_iocs"], s["url_iocs"]) == (3, 6)
+
+
+def test_element_src_counts_only_a_network_url(tmp_path):
+    """box-js logs Remote Script for the src of any created element and Image.src for any
+    value: about:blank, data: URIs and decoded inline HTML fetch nothing."""
+    r = _results(tmp_path, [
+        {"type": "Remote Script", "value": {"url": "https://c.invalid/stage2.js"}},
+        {"type": "Remote Script", "value": {"url": "//c.invalid/stage3.js"}},
+        {"type": "Remote Script", "value": {"url": "about:blank"}},
+        {"type": "Remote Script", "value": {"url": "data:image/gif;base64,R0lGODlhAQABAAAAACw="}},
+        {"type": "Remote Script", "value": {"url": "<b>hi</b>"}},
+        # box-js decodes a data:text/html;base64 src and logs the decoded text, any text.
+        {"type": "Remote Script", "value": {"url": "alert(1)"}},
+        {"type": "Remote Script", "value": {"url": "var a = 1;\nrun(a)"}},
+        {"type": "Image.src", "value": "HTTP://c.invalid/p.gif"},
+        {"type": "Image.src", "value": "data:image/png;base64,AAAA"},
+        {"type": "Image.src", "value": {"not": "a string"}},
+        # Path-relative: the browser fetches it from the page's origin.
+        {"type": "Image.src", "value": "gate.php?c=1"},
+        {"type": "Remote Script", "value": {"url": "/wp-content/s2.js"}},
+        # An absolute URL counts whatever characters its path or query holds.
+        {"type": "Image.src", "value": "https://c2.invalid/collect;sid=7"},
+        {"type": "Remote Script", "value": {"url": "https://c2.invalid/a.php?q=('x'){1}"}},
+        {"type": "Image.src", "value": "  //c2.invalid/p(1).gif"},
+        # A drive-letter path is a local file, not a URL scheme.
+        {"type": "Image.src", "value": "C:\\Users\\Public\\a.gif"},
+        {"type": "Image.src", "value": "C:/Users/Public/a.gif"},
+        {"type": "Remote Script", "value": {"url": "mailto:a@b.invalid"}},
+        # A local file: URL fetches nothing; file://host/share is a UNC (SMB/WebDAV) fetch.
+        {"type": "Image.src", "value": "file:///C:/Users/Public/p.gif"},
+        {"type": "Image.src", "value": "file:/C:/Users/Public/p.gif"},
+        {"type": "Remote Script", "value": {"url": "file://share.invalid/pub/s.js"}},
+        # node's URL parser reads backslashes as slashes: these are the same UNC fetch...
+        {"type": "Remote Script", "value": {"url": "file:\\\\share.invalid\\pub\\s.js"}},
+        {"type": "Image.src", "value": "file:/\\share.invalid/p.gif"},
+        # ...and localhost or a drive letter as the host is a local file.
+        {"type": "Image.src", "value": "file://localhost/C:/x.gif"},
+        {"type": "Image.src", "value": "file://C:/x.gif"},
+        # Relative paths that merely start like a no-fetch scheme name.
+        {"type": "Image.src", "value": "data.php?x=1"},
+        {"type": "Remote Script", "value": {"url": "about-us/s.js"}},
+        # A script element of box-js's ActiveXObject("dom") document, appended or given a src
+        # by setAttribute: logged as ScriptSrc (and kept out of urls.json by box-js).
+        {"type": "ScriptSrc", "value": {"url": "https://c2.invalid/stage.js", "tag": "script"}},
+        {"type": "ScriptSrc", "value": {"url": "about:blank", "tag": "script"}},
+    ])
+    assert _summarise(r)["url_iocs"] == 14
+
+
+def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):
+    """about:, data:, javascript: and blob: targets are not requests whichever API got
+    them (IE Navigate('about:blank'), fetch(dataUri) for HTML smuggling); entries without a
+    url (a dns query's hostname) still count."""
+    r = _results(tmp_path, [
+        {"type": "InternetExplorer.Application", "value": {"url": "about:blank"}},
+        {"type": "fetch", "value": {"url": "data:application/octet-stream;base64,TVqQ"}},
+        {"type": "UrlFetch", "value": {"url": " DATA:text/plain,x", "method": "GET"}},
+        {"type": "XMLHttpRequest", "value": {"method": "GET", "url": "blob:https://a/1"}},
+        {"type": "fetch", "value": {"url": "https://c2.invalid/a"}},
+        {"type": "Window Location", "value": {"url": "https://login.invalid/oauth2"}},
+        {"type": "window.open()", "value": {"url": "https://payload.invalid/invoice.zip"}},
+        {"type": "window.open()", "value": {"url": "about:blank"}},
+        {"type": "dns.lookup()", "value": {"hostname": "c2.invalid"}},
+        {"type": "GetObject()", "value": "script:http://c2.invalid/p.sct"},
+        # The same no-fetch targets through other request types.
+        {"type": "XMLHTTP", "value": {"url": "C:/Users/Public/a.txt"}},
+        {"type": "window.open()", "value": {"url": "mailto:a@b.invalid"}},
+        {"type": "fetch", "value": {"url": "file:///etc/hosts"}},
+        # An anchor's href and setAttribute('src'|'href') share these types: not counted.
+        {"type": "HREF Location", "value": {"url": "https://a.invalid/"}},
+        {"type": "Element Source", "value": {"val": "https://a.invalid/"}},
+    ])
+    assert _summarise(r)["url_iocs"] == 5
+
+
 def test_summarise_survives_malformed_json(tmp_path):
     r = tmp_path / "x.js.results"
     r.mkdir()
@@ -85,7 +235,7 @@ def test_every_payload_carries_a_schema_version(tmp_path, monkeypatch):
 
     from boxjs_engine.engine import RUN_JS_ENV, SCHEMA_VERSION, BoxJsEngine
 
-    assert SCHEMA_VERSION == "boxjs.result/1"
+    assert SCHEMA_VERSION == "boxjs.result/2"
     monkeypatch.setenv(RUN_JS_ENV, str(tmp_path / "absent" / "run.js"))
     sample = tmp_path / "s.js"
     sample.write_text("var a = 1;")
@@ -318,7 +468,8 @@ def test_every_non_ok_payload_carries_a_schema_version(tmp_path, monkeypatch):
 
 
 def test_exit_4_after_real_behaviour_is_not_a_rejection(tmp_path, monkeypatch):
-    """A sample can exit 4 itself (host require); evidence already logged must be kept."""
+    """Evidence logged before an exit 4 is kept: the status is judged on what box-js produced,
+    not on the exit code alone."""
     body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
             " {type: 'Run', value: {command: 'cmd /c whoami'}}]));\nprocess.exit(4);\n")
     res, _ = _detonate(tmp_path, monkeypatch, body)
@@ -416,16 +567,56 @@ def test_files_written_before_a_self_exit_4_are_kept(tmp_path, monkeypatch):
 
 def test_a_stdout_flood_is_not_spooled_to_disk(tmp_path, monkeypatch):
     """stdout is unused and stderr keeps only a tail: nothing a sample prints is stored."""
-    import shutil as _sh
+    import pytest
+
+    if not Path("/proc/self/fd").is_dir():
+        pytest.skip("counts open files through /proc (Linux)")
+    import os as _os
     import threading
 
-    free_before = _sh.disk_usage(tmp_path).free
-    lowest = [free_before]
+    import tempfile as _tempfile
+
+    # Measured on this test's own tree, with every temp dir (this process's and the
+    # child's) inside it: the filesystem's free space is shared with every other process
+    # and made the test flaky. A spool may be nameless (an O_TMPFILE TemporaryFile, or one
+    # unlinked after opening), so open files are counted through /proc as well as named ones.
+    spool = tmp_path / "tmpdir"
+    spool.mkdir()
+    monkeypatch.setenv("TMPDIR", str(spool))
+    monkeypatch.setattr(_tempfile, "tempdir", str(spool))
+    root = str(tmp_path)
+
+    def used() -> int:
+        seen: dict[tuple[int, int], int] = {}
+        for d, _dirs, files in _os.walk(tmp_path):
+            for f in files:
+                try:
+                    st = _os.lstat(_os.path.join(d, f))
+                    seen[(st.st_dev, st.st_ino)] = st.st_size
+                except OSError:
+                    pass
+        for pid in _os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                fds = _os.listdir(f"/proc/{pid}/fd")
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    if _os.readlink(f"/proc/{pid}/fd/{fd}").startswith(root):
+                        st = _os.stat(f"/proc/{pid}/fd/{fd}")
+                        seen[(st.st_dev, st.st_ino)] = st.st_size
+                except OSError:
+                    pass
+        return sum(seen.values())
+
+    highest = [used()]
     done = threading.Event()
 
     def watch():
         while not done.is_set():
-            lowest[0] = min(lowest[0], _sh.disk_usage(tmp_path).free)
+            highest[0] = max(highest[0], used())
             done.wait(0.01)
 
     t = threading.Thread(target=watch)
@@ -439,7 +630,96 @@ def test_a_stdout_flood_is_not_spooled_to_disk(tmp_path, monkeypatch):
         t.join()
     assert res.status == "ok"
     # 600 MiB printed; at no point was more than a little of it on disk.
-    assert free_before - lowest[0] < (64 << 20)
+    assert highest[0] < (64 << 20)
+
+
+def test_an_unreadable_ioc_report_is_not_called_silent(tmp_path, monkeypatch):
+    """box-js rewrites IOC.json whole on every IOC, so a kill mid-write leaves it cut short;
+    zero counts then mean 'unknown', not 'no behaviour'."""
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), '[{\"type\": \"Sample Name\"}, {\"type\": \"Ru');\n"
+            "fs.writeFileSync(path.join(res, 'urls.json'), JSON.stringify(['http://a.invalid/']));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    codes = [w.code for w in res.warnings]
+    assert res.status == "ok"
+    assert codes == ["analysis_unreadable"]
+    assert "IOC.json" in res.warnings[0].message
+    assert res.payload.fields["url_count"] == 1
+
+
+def test_a_cut_short_url_list_is_flagged_too(tmp_path, monkeypatch):
+    """box-js rewrites urls.json on every logUrl, even of a URL it has, so a kill cuts it
+    more often than IOC.json: url_count 0 is then unknown, not zero."""
+    body = ("fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'},"
+            " {type: 'XMLHTTP', value: {url: 'http://c2.invalid/'}}]));\n"
+            "fs.writeFileSync(path.join(res, 'urls.json'), '[\\n\\t\"http://c2.inv');\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [(w.code, "urls.json" in w.message) for w in res.warnings] == [("analysis_unreadable", True)]
+    assert res.payload.fields["url_iocs"] == 1
+
+
+def test_a_box_js_crash_is_not_a_clean_run(tmp_path, monkeypatch):
+    """_run.js turns a signal death of analyze.js (a V8 heap-OOM abort, an OOM kill) into
+    exit 0; V8's fatal line on stderr is what is left to tell it from a clean, inert run."""
+    body = ("process.stderr.write('\\n<--- Last few GCs --->\\nFATAL ERROR: Reached heap limit "
+            "Allocation failed - JavaScript heap out of memory\\n');\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert res.status == "ok"
+    assert [w.code for w in res.warnings] == ["box_js_crashed"]
+    # The line's text is never echoed: the sample can print such a line too.
+    assert "Reached heap limit" not in res.warnings[0].message
+
+
+def test_a_crash_is_seen_behind_a_long_native_stack_trace(tmp_path, monkeypatch):
+    """Node 22 prints a native stack trace after V8's FATAL line, often more than the
+    2000-byte stderr tail; the line is recognised as it streams past."""
+    body = ("process.stderr.write('\\n\\n<--- JS stacktrace --->\\n\\nFATAL ERROR: Reached heap limit "
+            "Allocation failed - JavaScript heap out of memory\\n----- Native stack trace -----\\n');\n"
+            "for (let i = 0; i < 40; i++) process.stderr.write(' ' + i + ': 0xdeadbeef node::Something"
+            "<v8::internal::Isolate, long template args>::Frame [/usr/local/bin/node]\\n'.repeat(1));\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [w.code for w in res.warnings] == ["box_js_crashed"]
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("block", [
+    # V8_Fatal, e.g. "x".repeat(2e8).split(""): a failed CHECK / invalid-size abort.
+    "\\n\\n#\\n# Fatal error in , line 0\\n# Fatal JavaScript invalid size error 169220804\\n"
+    "#\\n#\\n#\\n#FailureMessage Object: 0x7ffd\\n",
+    # V8's non-heap OOM.
+    "\\n\\n#\\n# Fatal process out of memory: Zone\\n#\\n",
+])
+def test_a_v8_fatal_abort_is_a_crash_too(tmp_path, monkeypatch, block):
+    """V8's own fatal path prints a '# Fatal ...' block, not node's FATAL ERROR line, and
+    _run.js reports that signal death as exit 0 as well."""
+    body = ("process.stderr.write('" + block + "');\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [w.code for w in res.warnings] == ["box_js_crashed"]
+
+
+def test_a_fatal_line_split_across_reads_is_seen(tmp_path, monkeypatch):
+    """The marker can straddle two pipe reads; the carried bytes join them."""
+    body = ("process.stderr.write('x'.repeat(100) + '\\nFATAL ER');\n"
+            "const until = Date.now() + 300; while (Date.now() < until) {}\n"
+            "process.stderr.write('ROR: Reached heap limit\\n');\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [w.code for w in res.warnings] == ["box_js_crashed"]
+
+
+def test_fatal_text_inside_a_line_is_not_a_crash(tmp_path, monkeypatch):
+    """box-js's uglify child prints its parse error as JSON quoting the sample's string, so
+    a sample can put 'FATAL ERROR: ' mid-line on stderr; only the line-start form counts
+    (which a sample can still produce in other ways: the warning is a hint, see _FATAL)."""
+    body = ("process.stderr.write('{\"message\":\"Unexpected token: string (FATAL ERROR: Reached "
+            "heap limit Allocation failed - JavaScript heap out of memory)\",\"line\":4}\\n');\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [w.code for w in res.warnings] == ["no_observable_behaviour"]
 
 
 def test_stderr_tail_is_kept_for_a_failed_run(tmp_path, monkeypatch):

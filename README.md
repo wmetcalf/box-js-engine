@@ -39,15 +39,15 @@ they are deliberately not vendored.
 
 ## Is warm worth it?
 
-**Unmeasured — do not assume.** box-js's per-sample cost is dominated by emulation and
-the rewrite stage, neither of which pre-warms. Warm only avoids node startup plus the
-box-js module graph. Measure a trivial sample against a real one before choosing the
-tier; see the header of `deploy/gvisor/Dockerfile.boxjs`.
+Yes, measured on toolz2 (see the header of `deploy/gvisor/Dockerfile.boxjs`): node plus
+the box-js module graph is ~91 ms, but creating the container is ~4.2 s, more than twice
+the emulation itself. A resident warm sandbox turns a ~6 s cold job into a ~2 s one.
 
 ## Status
 
-Scaffold. The engine compiles and is unit-tested; **neither image has been built and no
-end-to-end detonation has been run.**
+The cold image builds (with a build-time box-js smoke run) and runs on toolz2;
+`tests/test_contract.py` detonates real samples (WScript and node droppers) through box-js
+and checks them, and the harness's sealed `metadata.json`, against the contract.
 
 ## Engine contract
 

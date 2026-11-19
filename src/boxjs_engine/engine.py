@@ -16,7 +16,11 @@ sample without re-reading the artifacts.
 Egress is taken from the worker, not guessed. `Limits.net_egress` decides between
 `--download` (really fetch the next stage) and `--fake-download` (return a synthetic
 200). An engine that fetched live payloads while the worker believed it was offline
-would be lying to the operator about what just happened on their network.
+would be lying to the operator about what just happened on their network. `--download`
+reaches the network only through box-js's lib.fetchUrl (the XMLHTTP/WinHttpRequest ActiveX
+objects, the browser fetch(), and the sample calling lib.fetchUrl itself); node's
+http/https/dns/net are stubs in either mode, and not all of them fail as offline node
+would (see the contract's egress-mode gap).
 """
 from __future__ import annotations
 
@@ -48,7 +52,10 @@ EXTRA_ARGV_ENV = "BOXJS_EXTRA_ARGV"
 
 #: Version of the payload Record shape, on every payload (ok and engine_error) under
 #: `schema_version`. Bump it when a field is added, removed or changes meaning.
-SCHEMA_VERSION = "boxjs.result/1"
+#: /2: exec_iocs and url_iocs count more IOC types (node child_process/http/https/axios/
+#: socket.io/net, JXA, remote MSI, PayloadExec, WMI/IE/browser fetches), and url_iocs counts
+#: DNS queries too.
+SCHEMA_VERSION = "boxjs.result/2"
 
 #: box-js's own analysis output, declared first and as kind `analysis`. env_vars.json is
 #: box-js's record of the environment variables the sample set, not a file it dropped.
@@ -73,14 +80,106 @@ _BASE_ARGV = [
 ]
 
 #: IOC types box-js emits that mean "the sample launched something". Kept in step with
-#: the logIOC call sites in analyze.js/lib.js/emulator/ — a missing entry silently
-#: drops execution evidence from the summary.
+#: the logIOC call sites in analyze.js/lib.js/emulator/ and boilerplate.js (child_process
+#: logs `process ...`; the JXA app launch matches box-js's own tools/harrington-enrich.js;
+#: PayloadExec is box-js's sign that the sample ran a stage it downloaded) — a missing entry
+#: silently drops execution evidence from the summary. Not $.NSTask...launchAndReturnError():
+#: box-js's logIOC for it is commented out, so that type is never emitted. WindowsInstaller
+#: (a remote MSI InstallProduct or OpenPackage) counts as a launch either way: box-js keeps
+#: one entry per (type, value), so an open then an install of the same URL leaves only the
+#: open's entry, and splitting by description would lose the install.
 _EXEC_IOCS = frozenset({
     "run", "commandexec", "wmi.getobject.run", "wmi.getobject.create",
     "createshortcut", "task", "task path", "task arguments",
+    "process execsync()/exec()", "process spawn()", "process fork()", "payloadexec",
+    "windowsinstaller",
+    "$.nsworkspace.sharedworkspace.openapplicationaturlconfigurationcompletionhandler()",
 })
 _WRITE_IOCS = frozenset({"filewrite", "newresource", "adodbstream"})
-_URL_IOCS = frozenset({"urlfetch", "xmlhttp", "fetch"})
+#: Network requests: URL fetches (ActiveX, WMI GetObject moniker, IE Navigate, browser,
+#: script-src injection, jQuery, beacon, pixel, extension, JXA), the node stubs' http/axios/socket.io/net calls,
+#: and DNS queries (a DNS lookup names the C2 host as surely as a fetch of its URL does).
+#: The browser XMLHttpRequest, Remote Script and Image.src types are classified per entry
+#: (_ioc_family). Window Location (location.replace) and window.open() navigate;
+#: HREF Location and Element Source are not counted: box-js also logs them for an anchor's
+#: href and for setAttribute('href'), which fetch nothing.
+_URL_IOCS = frozenset({
+    "urlfetch", "xmlhttp", "fetch", "ajax", "jquery.get()", "jquery.getjson()",
+    "navigator.sendbeacon()", "getobject()", "internetexplorer.application",
+    "window location", "window.open()",
+    "chrome.runtime.sendmessage", "$.nsdata.datawithcontentsofurl()",
+    "$.nsurlsession.sessionwithconfiguration().datataskwithurlcompletionhandler()",
+    "http.get()", "http.request()", "axios.get()", "axios.post()", "socket.io-client()",
+    "net.createconnection()",
+})
+#: boilerplate.js logs https and dns calls as "https.<method>()" / "dns.<function>()".
+_URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
+
+
+#: A request target that fetches nothing: an about:, data:, javascript:, blob:, mailto: or
+#: tel: URL, a local file: URL (see _fetches), or a drive-letter path ("C:/...").
+_NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob|mailto|tel|[a-z]):", re.IGNORECASE)
+_FILE_URL = re.compile(r"\s*file:", re.IGNORECASE)
+#: Types box-js logs for whatever value is set (any element's src, Image.src, and ScriptSrc:
+#: a script element of box-js's ActiveXObject("dom") document appended or given a src by
+#: setAttribute, kept out of urls.json; the default document logs those as Remote Script or
+#: the uncounted Element Source); a value that
+#: is not URL-shaped (the HTML or script box-js decodes from a data:text/html;base64 src,
+#: any text) is no request either. A path-relative value is: the browser fetches it from
+#: the page's origin.
+_SRC_IOCS = frozenset({"remote script", "image.src", "scriptsrc"})
+#: An absolute (scheme:) or scheme-relative (//) URL: a request whatever its path holds. A
+#: scheme has two letters or more: "C:" is a drive-letter path, a local file.
+_ABSOLUTE_URL = re.compile(r"(?:[a-z][a-z0-9+.-]+:|//)\S", re.IGNORECASE)
+#: A plausible path-relative URL: no whitespace and none of the characters code or markup
+#: is made of (those make decoded text, not a path, far likelier).
+_RELATIVE_URL = re.compile(r"[^\s<>(){};\"'`\\]+")
+
+
+def _request_url(value) -> str | None:
+    """The URL an IOC value names (a {url} record or a bare string), or None."""
+    url = value.get("url") if isinstance(value, dict) else value
+    return url if isinstance(url, str) else None
+
+
+def _fetches(url: str | None) -> bool:
+    if url is None:
+        return True
+    if _FILE_URL.match(url):
+        # As node's URL parser reads it (backslashes are slashes): file://host/... names a
+        # UNC (SMB/WebDAV) fetch; no host, localhost or a drive letter is a local file.
+        rest = url.lstrip()[5:].replace("\\", "/")
+        if not rest.startswith("//"):
+            return False
+        host = rest[2:].split("/", 1)[0].lower()
+        return host not in ("", "localhost") and not re.fullmatch(r"[a-z][:|]", host)
+    return not _NO_FETCH_URL.match(url)
+
+
+def _ioc_family(entry: dict) -> str | None:
+    """The summary family of one IOC.json entry, or None."""
+    t = str(entry.get("type", "")).lower()
+    value = entry.get("value")
+    if t in _SRC_IOCS:
+        url = _request_url(value)
+        if url is None:
+            return None
+        url = url.strip()
+        shaped = _ABSOLUTE_URL.match(url) or _RELATIVE_URL.fullmatch(url)
+        return "url" if shaped and _fetches(url) else None
+    if t == "xmlhttprequest":
+        # Logged for open() ({method, url}) and for setRequestHeader ({field, value}).
+        if not (isinstance(value, dict) and "url" in value):
+            return None
+        return "url" if _fetches(_request_url(value)) else None
+    if t in _EXEC_IOCS:
+        return "exec"
+    if t in _WRITE_IOCS:
+        return "write"
+    if t in _URL_IOCS or _URL_IOC_FORM.fullmatch(t):
+        # Entries without a URL (a dns query's {hostname}) are requests too.
+        return "url" if _fetches(_request_url(value)) else None
+    return None
 
 
 def _run_js() -> str:
@@ -160,6 +259,18 @@ def _load_json(path: Path, default, max_bytes: int = _MAX_JSON_BYTES):
         return default
 
 
+_UNREADABLE = object()
+
+
+def _unreadable_analysis(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> list[str]:
+    """box-js's JSON analysis files that are there but cannot be parsed: box-js rewrites
+    each whole (IOC.json on every new IOC, urls.json on every logUrl), so a kill mid-write
+    leaves one empty or cut short; or it is over the parse cap."""
+    return [name for name in _ANALYSIS_FILES if name.endswith(".json")
+            and _is_regular(results / name)
+            and _load_json(results / name, _UNREADABLE, max_json_bytes) is _UNREADABLE]
+
+
 def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
     """Lift counts out of IOC.json so a consumer can triage without opening artifacts."""
     iocs = _load_json(results / "IOC.json", [], max_json_bytes)
@@ -173,12 +284,12 @@ def _summarise(results: Path, max_json_bytes: int = _MAX_JSON_BYTES) -> dict:
     for entry in iocs:
         if not isinstance(entry, dict):
             continue
-        t = str(entry.get("type", "")).lower()
-        if t in _EXEC_IOCS:
+        family = _ioc_family(entry)
+        if family == "exec":
             n_exec += 1
-        elif t in _WRITE_IOCS:
+        elif family == "write":
             n_write += 1
-        elif t in _URL_IOCS:
+        elif family == "url":
             n_url += 1
 
     return {
@@ -205,6 +316,16 @@ def _is_jscript_encoded(path: Path) -> bool:
         head = f.read()
     start = _JSE_START.search(head)
     return start is not None and _JSE_TAIL.search(head, start.end()) is not None
+
+
+#: A fatal V8 error on box-js's stderr, at the start of a line: node's "FATAL ERROR: " (heap
+#: OOM) or V8's own "# Fatal ..." block (V8_Fatal: a failed CHECK, an invalid-size abort,
+#: "# Fatal process out of memory") (box-js's uglify child prints parse errors as one JSON line quoting the
+#: sample's strings). Not proof: the sample can still print such a line (box-js's host
+#: xmldom reports a malformed document's text there, and an uncaught Error prints its
+#: message), and a node child of box-js that dies of OOM prints it while analyze.js lives
+#: on. So it only ever adds a "may be partial" warning, and its text is never echoed.
+_FATAL = re.compile(rb"\n(?:FATAL ERROR: |# Fatal )")
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -399,11 +520,21 @@ class BoxJsEngine:
         # still holding the pipe: box-js runs in its own session, and the whole group is
         # killed once _run.js exits, which ends the pipe.
         tail = bytearray()
+        # V8's fatal line, found as stderr streams past: node 22 prints a native stack trace
+        # after it that is often longer than the tail. The carried bytes keep a line start
+        # and a marker split across two reads.
+        fatal: list[bool] = []
 
         def keep_tail(pipe) -> None:
+            carry = b"\n"
             for chunk in iter(lambda: pipe.read(65536), b""):
                 tail.extend(chunk)
                 del tail[:-2000]
+                if not fatal:
+                    buf = carry + chunk
+                    if _FATAL.search(buf):
+                        fatal.append(True)
+                    carry = buf[-64:]
 
         # NEVER shell=True; argv is a fixed list. The worker is the sandbox.
         started = time.monotonic()
@@ -444,9 +575,19 @@ class BoxJsEngine:
                 message=f"box-js's own {vm_timeout}s timeout ended the analysis; results are partial",
             ))
 
+        # _run.js reports a signal death of analyze.js (a V8 heap-OOM abort, an OOM kill) as
+        # exit 0; V8's fatal line on the inherited stderr is what is left to tell it from a
+        # clean run.
+        if fatal and not killed:
+            warnings.append(Warning(
+                code="box_js_crashed",
+                message="a V8 fatal error (e.g. heap out of memory) was reported on box-js's "
+                        "stderr; the analysis may have died mid-run and results may be partial",
+            ))
+
         results = _results_dir(outdir, input, before)
-        # Judged on what box-js produced, not on the exit code or a marker alone: a sample can
-        # exit 4 itself (host require), and a plain script can quote a JSE marker.
+        # Judged on what box-js produced, not on the exit code or a marker alone: evidence
+        # logged before a nonzero exit is kept, and a plain script can quote a JSE marker.
         summary = (_summarise(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes))
                    if results is not None else None)
         # Nothing logged and nothing written but box-js's own log/index files.
@@ -527,7 +668,15 @@ class BoxJsEngine:
             ))
         artifacts = _declare_artifacts(results, outdir, limits, warnings)
 
-        if summary["ioc_count"] <= 1:
+        unreadable = _unreadable_analysis(results, max(_MAX_JSON_BYTES, limits.max_artifact_bytes))
+        for name in unreadable:
+            warnings.append(Warning(
+                code="analysis_unreadable",
+                message=f"{name} could not be parsed (cut short by a kill mid-write, or over "
+                        "the parse cap): what it counts is unknown, not zero",
+            ))
+        if (summary["ioc_count"] <= 1 and "IOC.json" not in unreadable
+                and not any(w.code == "box_js_crashed" for w in warnings)):
             # box-js always logs a "Sample Name" IOC, so <=1 means it emulated
             # nothing. Not an error — plenty of samples are inert or bail early —
             # but a consumer ranking by ioc_count should be told it was silent
