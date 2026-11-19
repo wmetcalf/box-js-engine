@@ -126,8 +126,9 @@ _NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob):", re.IGNORECASE)
 #: any text) is no request either. A path-relative value is: the browser fetches it from
 #: the page's origin.
 _SRC_IOCS = frozenset({"remote script", "image.src", "scriptsrc"})
-#: An absolute (scheme:) or scheme-relative (//) URL: a request whatever its path holds.
-_ABSOLUTE_URL = re.compile(r"(?:[a-z][a-z0-9+.-]*:|//)\S", re.IGNORECASE)
+#: An absolute (scheme:) or scheme-relative (//) URL: a request whatever its path holds. A
+#: scheme has two letters or more: "C:" is a drive-letter path, a local file.
+_ABSOLUTE_URL = re.compile(r"(?:[a-z][a-z0-9+.-]+:|//)\S", re.IGNORECASE)
 #: A plausible path-relative URL: no whitespace and none of the characters code or markup
 #: is made of (those make decoded text, not a path, far likelier).
 _RELATIVE_URL = re.compile(r"[^\s<>(){};\"'`\\]+")
@@ -305,13 +306,14 @@ def _is_jscript_encoded(path: Path) -> bool:
     return start is not None and _JSE_TAIL.search(head, start.end()) is not None
 
 
-#: V8's line for a fatal error (heap OOM, a failed CHECK) on box-js's stderr, at the start
-#: of a line (box-js's uglify child prints parse errors as one JSON line quoting the
+#: A fatal V8 error on box-js's stderr, at the start of a line: node's "FATAL ERROR: " (heap
+#: OOM) or V8's own "# Fatal error in ..." / "# Fatal JavaScript ..." block (V8_Fatal: a
+#: failed CHECK, an invalid-size abort) (box-js's uglify child prints parse errors as one JSON line quoting the
 #: sample's strings). Not proof: the sample can still print such a line (box-js's host
 #: xmldom reports a malformed document's text there, and an uncaught Error prints its
 #: message), and a node child of box-js that dies of OOM prints it while analyze.js lives
 #: on. So it only ever adds a "may be partial" warning, and its text is never echoed.
-_FATAL = re.compile(rb"\nFATAL ERROR: ")
+_FATAL = re.compile(rb"\n(?:FATAL ERROR: |# Fatal (?:error|JavaScript) )")
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -508,7 +510,7 @@ class BoxJsEngine:
         tail = bytearray()
         # V8's fatal line, found as stderr streams past: node 22 prints a native stack trace
         # after it that is often longer than the tail. The carried bytes keep a line start
-        # and the whole line across chunk boundaries.
+        # and a marker split across two reads.
         fatal: list[bool] = []
 
         def keep_tail(pipe) -> None:

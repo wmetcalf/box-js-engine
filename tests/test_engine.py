@@ -147,6 +147,8 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "Image.src", "value": "https://c2.invalid/collect;sid=7"},
         {"type": "Remote Script", "value": {"url": "https://c2.invalid/a.php?q=('x'){1}"}},
         {"type": "Image.src", "value": "  //c2.invalid/p(1).gif"},
+        # A drive-letter path is a local file, not a URL scheme.
+        {"type": "Image.src", "value": "C:\\Users\\Public\\a.gif"},
         # A script element of box-js's ActiveXObject("dom") document, appended or given a src
         # by setAttribute: logged as ScriptSrc (and kept out of urls.json by box-js).
         {"type": "ScriptSrc", "value": {"url": "https://c2.invalid/stage.js", "tag": "script"}},
@@ -656,6 +658,26 @@ def test_a_crash_is_seen_behind_a_long_native_stack_trace(tmp_path, monkeypatch)
             "Allocation failed - JavaScript heap out of memory\\n----- Native stack trace -----\\n');\n"
             "for (let i = 0; i < 40; i++) process.stderr.write(' ' + i + ': 0xdeadbeef node::Something"
             "<v8::internal::Isolate, long template args>::Frame [/usr/local/bin/node]\\n'.repeat(1));\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [w.code for w in res.warnings] == ["box_js_crashed"]
+
+
+def test_a_v8_fatal_abort_is_a_crash_too(tmp_path, monkeypatch):
+    """V8's own fatal path (a failed CHECK, an invalid-size abort) prints a '# Fatal ...' block,
+    not node's FATAL ERROR line, and _run.js reports that signal death as exit 0 as well."""
+    body = ("process.stderr.write('\\n\\n#\\n# Fatal error in , line 0\\n# Fatal JavaScript invalid "
+            "size error 169220804\\n#\\n#\\n#\\n#FailureMessage Object: 0x7ffd\\n');\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [w.code for w in res.warnings] == ["box_js_crashed"]
+
+
+def test_a_fatal_line_split_across_reads_is_seen(tmp_path, monkeypatch):
+    """The marker can straddle two pipe reads; the carried bytes join them."""
+    body = ("process.stderr.write('x'.repeat(100) + '\\nFATAL ER');\n"
+            "const until = Date.now() + 300; while (Date.now() < until) {}\n"
+            "process.stderr.write('ROR: Reached heap limit\\n');\n"
             "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
     res, _ = _detonate(tmp_path, monkeypatch, body)
     assert [w.code for w in res.warnings] == ["box_js_crashed"]
