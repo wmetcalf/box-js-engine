@@ -305,10 +305,13 @@ def _is_jscript_encoded(path: Path) -> bool:
     return start is not None and _JSE_TAIL.search(head, start.end()) is not None
 
 
-#: V8's line for a fatal error (heap OOM, a failed CHECK) on box-js's stderr. Only at the
-#: start of a line: box-js's uglify child prints its parse errors as one JSON line that
-#: quotes the sample's own strings, so the text alone can be the sample's.
-_FATAL = re.compile(rb"\nFATAL ERROR: [^\r\n]{0,200}")
+#: V8's line for a fatal error (heap OOM, a failed CHECK) on box-js's stderr, at the start
+#: of a line (box-js's uglify child prints parse errors as one JSON line quoting the
+#: sample's strings). Not proof: the sample can still print such a line (box-js's host
+#: xmldom reports a malformed document's text there, and an uncaught Error prints its
+#: message), and a node child of box-js that dies of OOM prints it while analyze.js lives
+#: on. So it only ever adds a "may be partial" warning, and its text is never echoed.
+_FATAL = re.compile(rb"\nFATAL ERROR: ")
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -506,7 +509,7 @@ class BoxJsEngine:
         # V8's fatal line, found as stderr streams past: node 22 prints a native stack trace
         # after it that is often longer than the tail. The carried bytes keep a line start
         # and the whole line across chunk boundaries.
-        fatal: list[bytes] = []
+        fatal: list[bool] = []
 
         def keep_tail(pipe) -> None:
             carry = b"\n"
@@ -515,14 +518,9 @@ class BoxJsEngine:
                 del tail[:-2000]
                 if not fatal:
                     buf = carry + chunk
-                    m = _FATAL.search(buf)
-                    if m and (m.end() < len(buf) or len(m.group(0)) > 200):
-                        fatal.append(m.group(0)[1:])
-                    carry = buf[-512:]
-            if not fatal:
-                m = _FATAL.search(carry)
-                if m:
-                    fatal.append(m.group(0)[1:])
+                    if _FATAL.search(buf):
+                        fatal.append(True)
+                    carry = buf[-64:]
 
         # NEVER shell=True; argv is a fixed list. The worker is the sandbox.
         started = time.monotonic()
@@ -569,8 +567,8 @@ class BoxJsEngine:
         if fatal and not killed:
             warnings.append(Warning(
                 code="box_js_crashed",
-                message="box-js died mid-analysis (" + fatal[0].decode("utf-8", "replace")
-                        + "); results are partial",
+                message="a V8 fatal error (e.g. heap out of memory) was reported on box-js's "
+                        "stderr; the analysis may have died mid-run and results may be partial",
             ))
 
         results = _results_dir(outdir, input, before)

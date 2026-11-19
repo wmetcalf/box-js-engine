@@ -645,7 +645,8 @@ def test_a_box_js_crash_is_not_a_clean_run(tmp_path, monkeypatch):
     res, _ = _detonate(tmp_path, monkeypatch, body)
     assert res.status == "ok"
     assert [w.code for w in res.warnings] == ["box_js_crashed"]
-    assert "heap out of memory" in res.warnings[0].message
+    # The line's text is never echoed: the sample can print such a line too.
+    assert "Reached heap limit" not in res.warnings[0].message
 
 
 def test_a_crash_is_seen_behind_a_long_native_stack_trace(tmp_path, monkeypatch):
@@ -662,7 +663,8 @@ def test_a_crash_is_seen_behind_a_long_native_stack_trace(tmp_path, monkeypatch)
 
 def test_fatal_text_inside_a_line_is_not_a_crash(tmp_path, monkeypatch):
     """box-js's uglify child prints its parse error as JSON quoting the sample's string, so
-    a sample can put 'FATAL ERROR: ' mid-line on stderr; only V8's line-start form counts."""
+    a sample can put 'FATAL ERROR: ' mid-line on stderr; only the line-start form counts
+    (which a sample can still produce in other ways: the warning is a hint, see _FATAL)."""
     body = ("process.stderr.write('{\"message\":\"Unexpected token: string (FATAL ERROR: Reached "
             "heap limit Allocation failed - JavaScript heap out of memory)\",\"line\":4}\\n');\n"
             "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
