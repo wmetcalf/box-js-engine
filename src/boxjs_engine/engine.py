@@ -118,9 +118,10 @@ _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 
 #: A request target that fetches nothing: an about:, data:, javascript: or blob: URL.
 _NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob):", re.IGNORECASE)
-#: Types box-js logs for whatever value is set (any element's src, Image.src, a script
-#: element appended or given a src by setAttribute - ScriptSrc, which box-js keeps out of
-#: urls.json); a value that
+#: Types box-js logs for whatever value is set (any element's src, Image.src, and ScriptSrc:
+#: a script element of box-js's ActiveXObject("dom") document appended or given a src by
+#: setAttribute, kept out of urls.json; the default document logs those as Remote Script or
+#: the uncounted Element Source); a value that
 #: is not URL-shaped (the HTML or script box-js decodes from a data:text/html;base64 src,
 #: any text) is no request either. A path-relative value is: the browser fetches it from
 #: the page's origin.
@@ -304,8 +305,10 @@ def _is_jscript_encoded(path: Path) -> bool:
     return start is not None and _JSE_TAIL.search(head, start.end()) is not None
 
 
-#: V8's line for a fatal error (heap OOM, a failed CHECK) on box-js's stderr.
-_FATAL = re.compile(rb"FATAL ERROR: [^\r\n]{0,200}")
+#: V8's line for a fatal error (heap OOM, a failed CHECK) on box-js's stderr. Only at the
+#: start of a line: box-js's uglify child prints its parse errors as one JSON line that
+#: quotes the sample's own strings, so the text alone can be the sample's.
+_FATAL = re.compile(rb"\nFATAL ERROR: [^\r\n]{0,200}")
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -500,11 +503,26 @@ class BoxJsEngine:
         # still holding the pipe: box-js runs in its own session, and the whole group is
         # killed once _run.js exits, which ends the pipe.
         tail = bytearray()
+        # V8's fatal line, found as stderr streams past: node 22 prints a native stack trace
+        # after it that is often longer than the tail. The carried bytes keep a line start
+        # and the whole line across chunk boundaries.
+        fatal: list[bytes] = []
 
         def keep_tail(pipe) -> None:
+            carry = b"\n"
             for chunk in iter(lambda: pipe.read(65536), b""):
                 tail.extend(chunk)
                 del tail[:-2000]
+                if not fatal:
+                    buf = carry + chunk
+                    m = _FATAL.search(buf)
+                    if m and (m.end() < len(buf) or len(m.group(0)) > 200):
+                        fatal.append(m.group(0)[1:])
+                    carry = buf[-512:]
+            if not fatal:
+                m = _FATAL.search(carry)
+                if m:
+                    fatal.append(m.group(0)[1:])
 
         # NEVER shell=True; argv is a fixed list. The worker is the sandbox.
         started = time.monotonic()
@@ -548,11 +566,10 @@ class BoxJsEngine:
         # _run.js reports a signal death of analyze.js (a V8 heap-OOM abort, an OOM kill) as
         # exit 0; V8's fatal line on the inherited stderr is what is left to tell it from a
         # clean run.
-        crash = _FATAL.search(stderr)
-        if crash and not killed:
+        if fatal and not killed:
             warnings.append(Warning(
                 code="box_js_crashed",
-                message="box-js died mid-analysis (" + crash.group(0).decode("utf-8", "replace")
+                message="box-js died mid-analysis (" + fatal[0].decode("utf-8", "replace")
                         + "); results are partial",
             ))
 

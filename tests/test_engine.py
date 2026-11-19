@@ -147,8 +147,8 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "Image.src", "value": "https://c2.invalid/collect;sid=7"},
         {"type": "Remote Script", "value": {"url": "https://c2.invalid/a.php?q=('x'){1}"}},
         {"type": "Image.src", "value": "  //c2.invalid/p(1).gif"},
-        # A script element appended to the DOM, or its setAttribute('src'): logged as
-        # ScriptSrc (and kept out of urls.json by box-js).
+        # A script element of box-js's ActiveXObject("dom") document, appended or given a src
+        # by setAttribute: logged as ScriptSrc (and kept out of urls.json by box-js).
         {"type": "ScriptSrc", "value": {"url": "https://c2.invalid/stage.js", "tag": "script"}},
         {"type": "ScriptSrc", "value": {"url": "about:blank", "tag": "script"}},
     ])
@@ -646,6 +646,28 @@ def test_a_box_js_crash_is_not_a_clean_run(tmp_path, monkeypatch):
     assert res.status == "ok"
     assert [w.code for w in res.warnings] == ["box_js_crashed"]
     assert "heap out of memory" in res.warnings[0].message
+
+
+def test_a_crash_is_seen_behind_a_long_native_stack_trace(tmp_path, monkeypatch):
+    """Node 22 prints a native stack trace after V8's FATAL line, often more than the
+    2000-byte stderr tail; the line is recognised as it streams past."""
+    body = ("process.stderr.write('\\n\\n<--- JS stacktrace --->\\n\\nFATAL ERROR: Reached heap limit "
+            "Allocation failed - JavaScript heap out of memory\\n----- Native stack trace -----\\n');\n"
+            "for (let i = 0; i < 40; i++) process.stderr.write(' ' + i + ': 0xdeadbeef node::Something"
+            "<v8::internal::Isolate, long template args>::Frame [/usr/local/bin/node]\\n'.repeat(1));\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [w.code for w in res.warnings] == ["box_js_crashed"]
+
+
+def test_fatal_text_inside_a_line_is_not_a_crash(tmp_path, monkeypatch):
+    """box-js's uglify child prints its parse error as JSON quoting the sample's string, so
+    a sample can put 'FATAL ERROR: ' mid-line on stderr; only V8's line-start form counts."""
+    body = ("process.stderr.write('{\"message\":\"Unexpected token: string (FATAL ERROR: Reached "
+            "heap limit Allocation failed - JavaScript heap out of memory)\",\"line\":4}\\n');\n"
+            "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
+    res, _ = _detonate(tmp_path, monkeypatch, body)
+    assert [w.code for w in res.warnings] == ["no_observable_behaviour"]
 
 
 def test_stderr_tail_is_kept_for_a_failed_run(tmp_path, monkeypatch):
