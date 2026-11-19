@@ -155,6 +155,12 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "Image.src", "value": "file:///C:/Users/Public/p.gif"},
         {"type": "Image.src", "value": "file:/C:/Users/Public/p.gif"},
         {"type": "Remote Script", "value": {"url": "file://share.invalid/pub/s.js"}},
+        # node's URL parser reads backslashes as slashes: these are the same UNC fetch...
+        {"type": "Remote Script", "value": {"url": "file:\\\\share.invalid\\pub\\s.js"}},
+        {"type": "Image.src", "value": "file:/\\share.invalid/p.gif"},
+        # ...and localhost or a drive letter as the host is a local file.
+        {"type": "Image.src", "value": "file://localhost/C:/x.gif"},
+        {"type": "Image.src", "value": "file://C:/x.gif"},
         # Relative paths that merely start like a no-fetch scheme name.
         {"type": "Image.src", "value": "data.php?x=1"},
         {"type": "Remote Script", "value": {"url": "about-us/s.js"}},
@@ -163,7 +169,7 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "ScriptSrc", "value": {"url": "https://c2.invalid/stage.js", "tag": "script"}},
         {"type": "ScriptSrc", "value": {"url": "about:blank", "tag": "script"}},
     ])
-    assert _summarise(r)["url_iocs"] == 12
+    assert _summarise(r)["url_iocs"] == 14
 
 
 def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):

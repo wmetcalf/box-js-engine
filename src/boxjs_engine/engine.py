@@ -117,10 +117,9 @@ _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 
 
 #: A request target that fetches nothing: an about:, data:, javascript:, blob:, mailto: or
-#: tel: URL, a local file: URL (file:///..., not file://host/..., a UNC fetch), or a
-#: drive-letter path ("C:/...", a local file).
-_NO_FETCH_URL = re.compile(r"\s*(?:(?:about|data|javascript|blob|mailto|tel|[a-z]):|file:(?!//[^/]))",
-                           re.IGNORECASE)
+#: tel: URL, a local file: URL (see _fetches), or a drive-letter path ("C:/...").
+_NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob|mailto|tel|[a-z]):", re.IGNORECASE)
+_FILE_URL = re.compile(r"\s*file:", re.IGNORECASE)
 #: Types box-js logs for whatever value is set (any element's src, Image.src, and ScriptSrc:
 #: a script element of box-js's ActiveXObject("dom") document appended or given a src by
 #: setAttribute, kept out of urls.json; the default document logs those as Remote Script or
@@ -144,7 +143,17 @@ def _request_url(value) -> str | None:
 
 
 def _fetches(url: str | None) -> bool:
-    return url is None or not _NO_FETCH_URL.match(url)
+    if url is None:
+        return True
+    if _FILE_URL.match(url):
+        # As node's URL parser reads it (backslashes are slashes): file://host/... names a
+        # UNC (SMB/WebDAV) fetch; no host, localhost or a drive letter is a local file.
+        rest = url.lstrip()[5:].replace("\\", "/")
+        if not rest.startswith("//"):
+            return False
+        host = rest[2:].split("/", 1)[0].lower()
+        return host not in ("", "localhost") and not re.fullmatch(r"[a-z][:|]", host)
+    return not _NO_FETCH_URL.match(url)
 
 
 def _ioc_family(entry: dict) -> str | None:
