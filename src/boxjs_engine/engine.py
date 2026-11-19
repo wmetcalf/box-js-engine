@@ -117,8 +117,10 @@ _URL_IOC_FORM = re.compile(r"(?:https|dns)\.[a-z0-9_]+\(\)")
 
 
 #: A request target that fetches nothing: an about:, data:, javascript:, blob:, mailto: or
-#: tel: URL, or a drive-letter path ("C:/...", a local file).
-_NO_FETCH_URL = re.compile(r"\s*(?:about|data|javascript|blob|mailto|tel|[a-z]):", re.IGNORECASE)
+#: tel: URL, a local file: URL (file:///..., not file://host/..., a UNC fetch), or a
+#: drive-letter path ("C:/...", a local file).
+_NO_FETCH_URL = re.compile(r"\s*(?:(?:about|data|javascript|blob|mailto|tel|[a-z]):|file:(?!//[^/]))",
+                           re.IGNORECASE)
 #: Types box-js logs for whatever value is set (any element's src, Image.src, and ScriptSrc:
 #: a script element of box-js's ActiveXObject("dom") document appended or given a src by
 #: setAttribute, kept out of urls.json; the default document logs those as Remote Script or

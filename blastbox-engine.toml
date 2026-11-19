@@ -111,8 +111,8 @@ description = "Every other top-level file in the results dir: files the sample w
 #     request; a relative URL carrying a raw user agent is missed), AJAX/jQuery/sendBeacon/
 #     chrome.runtime.sendMessage, JXA fetches, node http/https/axios/socket.io/
 #     net.createConnection, and dns.* queries). No url_iocs entry
-#     whose URL is an about:, data:, javascript:, blob:, mailto: or tel: target or a
-#     drive-letter path (it fetches nothing)
+#     whose URL is an about:, data:, javascript:, blob:, mailto: or tel: target, a local
+#     file: URL (not file://host) or a drive-letter path (it fetches nothing)
 #     counts. boxjs.result/1 counted fewer types.
 #     engine_error: Record{schema_version, error, ...}
 #     (box_js_missing, node_missing, no_results_dir with exit_code + stderr_tail).

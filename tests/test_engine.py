@@ -151,6 +151,10 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "Image.src", "value": "C:\\Users\\Public\\a.gif"},
         {"type": "Image.src", "value": "C:/Users/Public/a.gif"},
         {"type": "Remote Script", "value": {"url": "mailto:a@b.invalid"}},
+        # A local file: URL fetches nothing; file://host/share is a UNC (SMB/WebDAV) fetch.
+        {"type": "Image.src", "value": "file:///C:/Users/Public/p.gif"},
+        {"type": "Image.src", "value": "file:/C:/Users/Public/p.gif"},
+        {"type": "Remote Script", "value": {"url": "file://share.invalid/pub/s.js"}},
         # Relative paths that merely start like a no-fetch scheme name.
         {"type": "Image.src", "value": "data.php?x=1"},
         {"type": "Remote Script", "value": {"url": "about-us/s.js"}},
@@ -159,7 +163,7 @@ def test_element_src_counts_only_a_network_url(tmp_path):
         {"type": "ScriptSrc", "value": {"url": "https://c2.invalid/stage.js", "tag": "script"}},
         {"type": "ScriptSrc", "value": {"url": "about:blank", "tag": "script"}},
     ])
-    assert _summarise(r)["url_iocs"] == 11
+    assert _summarise(r)["url_iocs"] == 12
 
 
 def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):
@@ -177,6 +181,10 @@ def test_no_url_family_entry_counts_a_target_that_fetches_nothing(tmp_path):
         {"type": "window.open()", "value": {"url": "about:blank"}},
         {"type": "dns.lookup()", "value": {"hostname": "c2.invalid"}},
         {"type": "GetObject()", "value": "script:http://c2.invalid/p.sct"},
+        # The same no-fetch targets through other request types.
+        {"type": "XMLHTTP", "value": {"url": "C:/Users/Public/a.txt"}},
+        {"type": "window.open()", "value": {"url": "mailto:a@b.invalid"}},
+        {"type": "fetch", "value": {"url": "file:///etc/hosts"}},
         # An anchor's href and setAttribute('src'|'href') share these types: not counted.
         {"type": "HREF Location", "value": {"url": "https://a.invalid/"}},
         {"type": "Element Source", "value": {"val": "https://a.invalid/"}},
@@ -668,11 +676,20 @@ def test_a_crash_is_seen_behind_a_long_native_stack_trace(tmp_path, monkeypatch)
     assert [w.code for w in res.warnings] == ["box_js_crashed"]
 
 
-def test_a_v8_fatal_abort_is_a_crash_too(tmp_path, monkeypatch):
-    """V8's own fatal path (a failed CHECK, an invalid-size abort) prints a '# Fatal ...' block,
-    not node's FATAL ERROR line, and _run.js reports that signal death as exit 0 as well."""
-    body = ("process.stderr.write('\\n\\n#\\n# Fatal process out of memory: Zone\\n#\\n"
-            "#FailureMessage Object: 0x7ffd\\n');\n"
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("block", [
+    # V8_Fatal, e.g. "x".repeat(2e8).split(""): a failed CHECK / invalid-size abort.
+    "\\n\\n#\\n# Fatal error in , line 0\\n# Fatal JavaScript invalid size error 169220804\\n"
+    "#\\n#\\n#\\n#FailureMessage Object: 0x7ffd\\n",
+    # V8's non-heap OOM.
+    "\\n\\n#\\n# Fatal process out of memory: Zone\\n#\\n",
+])
+def test_a_v8_fatal_abort_is_a_crash_too(tmp_path, monkeypatch, block):
+    """V8's own fatal path prints a '# Fatal ...' block, not node's FATAL ERROR line, and
+    _run.js reports that signal death as exit 0 as well."""
+    body = ("process.stderr.write('" + block + "');\n"
             "fs.writeFileSync(path.join(res, 'IOC.json'), JSON.stringify([{type: 'Sample Name'}]));\n")
     res, _ = _detonate(tmp_path, monkeypatch, body)
     assert [w.code for w in res.warnings] == ["box_js_crashed"]
